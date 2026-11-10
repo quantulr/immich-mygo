@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -41,15 +42,20 @@ func (s section) title() string {
 
 // feed is what a section shows, and how loading it went.
 type feed struct {
-	assets  []*photo
-	albums  []*album
-	loading bool
-	loaded  bool
-	err     error
+	// days are the timeline's days, newest first, their assets loading as
+	// the section shows them; favorites tells that they are the user's
+	// favorites.
+	days      []*timelineDay
+	favorites bool
+	albums    []*album
+	loading   bool
+	loaded    bool
+	err       error
 	// attempt numbers the loads, so that one that finishes after a newer
 	// one started is dropped.
 	attempt int
 	grid    ui.GridState
+	list    ui.ListState
 }
 
 // mainState is the main window: the section shown, and each section's
@@ -87,6 +93,15 @@ const (
 	controlsW = 3*28 + 2*2
 )
 
+// photoTileH is the height of a tile of the timeline, photoMinW the least
+// width it takes, and photoGap the room between tiles: as many columns as
+// fit across the card.
+const (
+	photoTileH = 128
+	photoMinW  = 148
+	photoGap   = 8
+)
+
 // The icons of the main window, on 16 as kero's, in the text's color.
 var (
 	photosIcon    = svgIcon(`<rect x="2" y="3" width="12" height="10" rx="2"/><circle cx="5.6" cy="6.4" r="1.1"/><path d="M3 11.6l3.2-3 2.4 2.2 1.7-1.5 2.7 2.3"/>`)
@@ -96,6 +111,7 @@ var (
 	signOutIcon   = svgIcon(`<path d="M6.6 3H4.7A1.7 1.7 0 0 0 3 4.7v6.6A1.7 1.7 0 0 0 4.7 13h1.9"/><path d="M10.2 5.4L12.8 8l-2.6 2.6"/><path d="M6.6 8h6.2"/>`)
 	errorIcon     = svgIcon(`<circle cx="8" cy="8" r="5.6"/><path d="M8 5.2v3.4"/><path d="M8 10.9v.1"/>`)
 	sidebarIcon   = svgIcon(`<rect x="2" y="3" width="12" height="10" rx="2"/><path d="M6 3v10"/>`)
+	playIcon      = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M5 3.4l7 4.6-7 4.6z" fill="currentColor"/></svg>`))
 
 	minimizeIcon = svgIcon(`<path d="M3.5 8h9"/>`)
 	maximizeIcon = svgIcon(`<rect x="3.5" y="3.5" width="9" height="9" rx="1.5"/>`)
@@ -385,10 +401,9 @@ func (a *app) controlButton(c *ui.Context, t *ui.Theme, icon *ui.SVG, label stri
 	return b
 }
 
-// cardBody shows the section: its photos, its albums, or how loading them
+// cardBody shows the section: its days, its albums, or how loading them
 // went.
 func (a *app) cardBody(c *ui.Context) {
-	t := c.Theme()
 	f := a.main.current()
 	switch {
 	case f.err != nil:
@@ -399,26 +414,32 @@ func (a *app) cardBody(c *ui.Context) {
 		a.emptyState(c, errorIcon, title, f.err.Error(), action, fn)
 	case !f.loaded && !f.loading:
 		a.emptyState(c, photosIcon, "还没有内容", "", "刷新", a.refreshSection)
-	case f.loading && len(f.assets) == 0 && len(f.albums) == 0:
-		ui.Column(c).Fill().Center().Gap(10).Children(func() {
-			ui.Spinner(c).Label("正在加载")
-			ui.Text(c, "正在加载…").FontSize(12).TextColor(t.TextMuted)
-		})
+	case !f.loaded:
+		a.loadingState(c)
 	case a.main.section == sectionAlbums:
 		if len(f.albums) == 0 {
 			a.emptyState(c, albumsIcon, "还没有相册", "在 Immich 里创建相册后，它们会出现在这里。", "刷新", a.refreshSection)
 			return
 		}
 		a.albumGrid(c, f)
-	case len(f.assets) == 0:
+	case len(f.days) == 0:
 		title, detail := "还没有照片", "上传照片到 Immich 后，它们会出现在这里。"
 		if a.main.section == sectionFavorites {
 			title, detail = "还没有收藏", "在 Immich 里把照片设为收藏，它们会出现在这里。"
 		}
 		a.emptyState(c, favoritesIcon, title, detail, "刷新", a.refreshSection)
 	default:
-		a.photoGrid(c, f)
+		a.timeline(c, f)
 	}
+}
+
+// loadingState shows that the section is on its way.
+func (a *app) loadingState(c *ui.Context) {
+	t := c.Theme()
+	ui.Column(c).Fill().Center().Gap(10).Children(func() {
+		ui.Spinner(c).Label("正在加载")
+		ui.Text(c, "正在加载…").FontSize(12).TextColor(t.TextMuted)
+	})
 }
 
 // emptyState centers a message in the card, with an action.
@@ -439,21 +460,202 @@ func (a *app) emptyState(c *ui.Context, icon *ui.SVG, title, detail, action stri
 	})
 }
 
-// photoGrid shows the section's photos, a square each, filling as their
-// thumbnails load.
-func (a *app) photoGrid(c *ui.Context, f *feed) {
-	t := c.Theme()
-	ui.GridView(c, &f.grid, len(f.assets), 148, 128, func(i int) {
-		p := f.assets[i]
-		tile := ui.Box(c).Fill().Radius(8).Clip().Background(t.SurfaceHover)
-		if p.Bm != nil {
-			tile.Children(func() { ui.Image(c, p.Bm).Fill().Fit(ui.Cover) })
-		} else {
-			tile.Center().Children(func() {
-				ui.Icon(c, photosIcon).Size(20, 20).TextColor(t.TextMuted)
-			})
+// timeline shows the section's days: a heading a day, its photos under it
+// in rows the card fits, and the heading held at the top as they scroll
+// under it. The days the list shows load as they come into view.
+func (a *app) timeline(c *ui.Context, f *feed) {
+	cols := a.timelineCols(c)
+	starts := make([]int, len(f.days)+1)
+	for i, d := range f.days {
+		starts[i+1] = starts[i] + timelineDayRows(d, cols)
+	}
+	dayAt := func(row int) (int, int) {
+		i := sort.Search(len(f.days), func(i int) bool { return starts[i+1] > row })
+		i = min(i, len(f.days)-1)
+		return i, row - starts[i]
+	}
+	f.list.Header = func(row int) bool {
+		_, k := dayAt(row)
+		return k == 0
+	}
+	f.list.Key = func(row int) any {
+		i, k := dayAt(row)
+		return timelineRowKey{day: f.days[i].key, row: k}
+	}
+	ui.List(c, &f.list, starts[len(starts)-1], func(row int) {
+		i, k := dayAt(row)
+		d := f.days[i]
+		if k == 0 {
+			a.dayHeading(c, f, i, d)
+			return
 		}
+		n := d.count
+		if d.loaded {
+			n = len(d.photos)
+		}
+		from := (k - 1) * cols
+		to := min(from+cols, n)
+		ui.Grid(c).Columns(cols).Gap(photoGap).Margin(0, 0, photoGap, 0).Children(func() {
+			for j := from; j < to; j++ {
+				a.photoTile(c, d, j)
+			}
+		})
 	}).Grow(1).Padding(12)
+	a.loadShownDays(f, starts)
+}
+
+// timelineRowKey tells the rows of the timeline apart: the day they show,
+// and the row within it.
+type timelineRowKey struct {
+	day string
+	row int
+}
+
+// timelineDayRows is how many rows a day takes: its heading, and a row per
+// cols photos.
+func timelineDayRows(d *timelineDay, cols int) int {
+	n := d.count
+	if d.loaded {
+		n = len(d.photos)
+	}
+	return 1 + (n+cols-1)/cols
+}
+
+// timelineCols is how many photos the card fits across: the window less
+// the sidebar, the card's edge and padding, and the list's.
+func (a *app) timelineCols(c *ui.Context) int {
+	winW, _ := c.Size()
+	p := math.Min(math.Max(float64(a.main.sidebarProgress), 0), 1)
+	sideW := math.Round(sidebarWidth * p)
+	avail := float64(winW) - sideW - 2*8 - 2 - 2*12
+	cols := int((avail + photoGap) / (photoMinW + photoGap))
+	return max(cols, 1)
+}
+
+// dayHeading heads a day of the timeline: its date and weekday, and what
+// it holds. It stays at the top of the list while its day scrolls under
+// it.
+func (a *app) dayHeading(c *ui.Context, f *feed, i int, d *timelineDay) {
+	t := c.Theme()
+	title, week := bucketTitle(d.key, time.Now())
+	h := ui.Row(c).Height(40).AlignItems(ui.Center).Gap(8).Background(cardFace(t))
+	h.Children(func() {
+		ui.Text(c, title).FontSize(14).FontWeight(600)
+		if week != "" {
+			ui.Text(c, week).FontSize(11.5).TextColor(t.TextMuted)
+		}
+		ui.Spacer(c)
+		switch {
+		case d.err != nil:
+			ui.Text(c, "加载失败，点击重试").FontSize(11.5).TextColor(t.Danger)
+		case d.loading && !d.loaded:
+			ui.Text(c, "正在加载…").FontSize(11.5).TextColor(t.TextMuted)
+		default:
+			ui.Text(c, fmt.Sprintf("%d 项", d.count)).FontSize(11.5).TextColor(t.TextMuted)
+		}
+	})
+	if d.err != nil && h.Clicked() {
+		d.err = nil
+		a.loadDay(f, i)
+	}
+}
+
+// photoTile is one photo of the timeline, its thumbnail once it loads, and
+// for a video how long it runs.
+func (a *app) photoTile(c *ui.Context, d *timelineDay, j int) {
+	t := c.Theme()
+	tile := ui.Box(c).Height(photoTileH).Radius(8).Clip().Background(t.SurfaceHover)
+	var p *photo
+	if d.loaded && j < len(d.photos) {
+		p = d.photos[j]
+	}
+	switch {
+	case p != nil && p.Bm != nil:
+		tile.Children(func() {
+			ui.Image(c, p.Bm).Fill().Fit(ui.Cover)
+			if p.Video {
+				a.videoBadge(c, p.Duration)
+			}
+		})
+	case p != nil && p.Video:
+		tile.Center().Children(func() {
+			ui.Icon(c, playIcon).Size(20, 20).TextColor(t.TextMuted)
+		})
+	default:
+		tile.Center().Children(func() {
+			ui.Icon(c, photosIcon).Size(20, 20).TextColor(t.TextMuted)
+		})
+	}
+}
+
+// videoBadge marks a video tile, and how long it runs.
+func (a *app) videoBadge(c *ui.Context, ms int) {
+	ui.Row(c).Absolute().Left(6).Bottom(6).Height(20).Padding(0, 6).Gap(4).
+		Radius(10).Background(ui.RGBA(0, 0, 0, 0.55)).AlignItems(ui.Center).Children(func() {
+		ui.Icon(c, playIcon).Size(9, 9).TextColor(ui.Hex("#ffffff"))
+		if ms > 0 {
+			ui.Text(c, durationLabel(ms)).FontSize(10.5).TextColor(ui.Hex("#ffffff"))
+		}
+	})
+}
+
+// loadShownDays loads the days the timeline shows, and those just past its
+// end, so that a scroll finds them ready.
+func (a *app) loadShownDays(f *feed, starts []int) {
+	first, last := f.list.Visible()
+	if last < first {
+		// Nothing laid out yet: the top of the timeline shows.
+		a.loadDay(f, 0)
+		return
+	}
+	ahead := last + 8
+	for i := range f.days {
+		if starts[i] > ahead {
+			break
+		}
+		if starts[i+1] <= first {
+			continue
+		}
+		a.loadDay(f, i)
+	}
+}
+
+// loadDay loads one day of the timeline off the UI thread, publishing it
+// through app.update, and its thumbnails after it.
+func (a *app) loadDay(f *feed, i int) {
+	if i < 0 || i >= len(f.days) || a.login.user == nil || a.login.user.Token == "" {
+		return
+	}
+	d := f.days[i]
+	if d.loaded || d.loading || d.err != nil {
+		return
+	}
+	d.loading = true
+	attempt := f.attempt
+	base, token, favorites := a.login.serverURL, a.login.user.Token, f.favorites
+	go func() {
+		photos, err := fetchDayAssets(base, token, d.key, favorites)
+		a.update(func() {
+			if attempt != f.attempt {
+				return
+			}
+			d.loading = false
+			if err != nil {
+				d.err = err
+				if errors.Is(err, errSessionExpired) {
+					f.err = err
+				}
+				return
+			}
+			d.loaded = true
+			d.count = len(photos)
+			d.photos = photos
+		})
+		if err != nil {
+			return
+		}
+		a.loadThumbnails(f, attempt, base, token, photos)
+	}()
 }
 
 // albumGrid shows the section's albums: a cover, a name and its count.
@@ -519,6 +721,7 @@ func (a *app) loadFeed(f *feed, s section) {
 	}
 	f.loading = true
 	f.err = nil
+	f.favorites = s == sectionFavorites
 	f.attempt++
 	attempt := f.attempt
 	base, token := a.login.serverURL, a.login.user.Token
@@ -548,7 +751,7 @@ func (a *app) loadFeed(f *feed, s section) {
 
 	favorites := s == sectionFavorites
 	go func() {
-		assets, err := fetchTimeline(base, token, favorites, feedLimit)
+		days, err := fetchTimelineDays(base, token, favorites)
 		a.update(func() {
 			if attempt != f.attempt {
 				return
@@ -559,17 +762,16 @@ func (a *app) loadFeed(f *feed, s section) {
 				return
 			}
 			f.loaded = true
-			f.assets = assets
+			f.days = days
+			// The top of the timeline comes first, before the list can
+			// tell what it shows.
+			a.loadDay(f, 0)
 		})
-		if err != nil {
-			return
-		}
-		a.loadThumbnails(f, attempt, base, token, assets)
 	}()
 }
 
 // loadThumbnails loads the photos' thumbnails, four at a time, so that
-// the grid fills as they come.
+// the timeline fills as they come.
 func (a *app) loadThumbnails(f *feed, attempt int, base, token string, assets []*photo) {
 	var wg sync.WaitGroup
 	workers := make(chan struct{}, 4)

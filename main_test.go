@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -417,10 +419,14 @@ func testPNG(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-const testAssetID = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+const (
+	testAssetID      = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+	testOtherAssetID = "00000000-0000-0000-0000-000000000002"
+	testVideoID      = "00000000-0000-0000-0000-000000000003"
+)
 
-// timelineServer serves a timeline of two assets with their thumbnails,
-// and one album.
+// timelineServer serves two days of the timeline with their thumbnails, one
+// holding an image and a video, and one album.
 func timelineServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	thumb := testPNG(t)
@@ -428,16 +434,32 @@ func timelineServer(t *testing.T) *httptest.Server {
 		switch {
 		case r.URL.Path == "/api/timeline/buckets":
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `[{"timeBucket":"2026-11-01","count":2}]`)
+			io.WriteString(w, `[
+				{"timeBucket":"2024-05-02","count":1},
+				{"timeBucket":"2024-05-01","count":2}
+			]`)
 		case r.URL.Path == "/api/timeline/bucket":
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{
-				"id":["`+testAssetID+`","00000000-0000-0000-0000-000000000002"],
-				"isImage":[true,false],
-				"ratio":[1.5,0.75]
-			}`)
-		case r.URL.Path == "/api/assets/"+testAssetID+"/thumbnail",
-			r.URL.Path == "/api/assets/00000000-0000-0000-0000-000000000002/thumbnail":
+			switch r.URL.Query().Get("timeBucket") {
+			case "2024-05-02":
+				io.WriteString(w, `{
+					"id":["`+testAssetID+`"],
+					"isImage":[true],
+					"ratio":[1.5],
+					"duration":[null]
+				}`)
+			case "2024-05-01":
+				io.WriteString(w, `{
+					"id":["`+testOtherAssetID+`","`+testVideoID+`"],
+					"isImage":[true,false],
+					"ratio":[1.2,0.75],
+					"duration":[null,42000]
+				}`)
+			default:
+				http.NotFound(w, r)
+			}
+		case strings.HasPrefix(r.URL.Path, "/api/assets/") &&
+			strings.HasSuffix(r.URL.Path, "/thumbnail"):
 			w.Header().Set("Content-Type", "image/png")
 			w.Write(thumb)
 		case r.URL.Path == "/api/albums":
@@ -462,15 +484,150 @@ func TestMainTimeline(t *testing.T) {
 	a.login.user = &account{Name: "Ada", Email: "ada@example.com", Token: "token-123"}
 	a.enterMain()
 
-	waitFor(t, "the timeline", func() bool {
+	waitFor(t, "the first day", func() bool {
 		f := &a.main.photos
-		return f.loaded && len(f.assets) == 2 &&
-			f.assets[0].Bm != nil && f.assets[1].Bm != nil
+		return f.loaded && len(f.days) == 2 && f.days[0].loaded &&
+			len(f.days[0].photos) == 1 && f.days[0].photos[0].Bm != nil
 	})
 
 	tt := ui.NewTester(a.view, 1120, 720)
-	if !tt.HasText("照片") || !tt.HasText("Ada") {
-		t.Errorf("texts %q in the main view", tt.Texts())
+	// The list tells what it shows after a layout; the frame after loads
+	// the day below it.
+	tt.Frame()
+	tt.Frame()
+	waitFor(t, "the second day", func() bool {
+		d := a.main.photos.days[1]
+		return d.loaded && len(d.photos) == 2 &&
+			d.photos[0].Bm != nil && d.photos[1].Bm != nil
+	})
+	tt.Frame()
+
+	titles := []string{"5月2日", "5月1日", "周四", "周三"}
+	for _, want := range titles {
+		if !tt.HasText(want) {
+			t.Errorf("texts %q do not show %q", tt.Texts(), want)
+		}
+	}
+	video := a.main.photos.days[1].photos[1]
+	if !video.Video || video.Duration != 42000 {
+		t.Errorf("video %+v", video)
+	}
+	if !tt.HasText("0:42") {
+		t.Errorf("texts %q do not show the video's length", tt.Texts())
+	}
+}
+
+// TestTimelineLoadsScrolledDays fills more than the card with one day: the
+// day below it loads as the timeline scrolls to it, not before.
+func TestTimelineLoadsScrolledDays(t *testing.T) {
+	const n = 120
+	ids := make([]string, n)
+	isImage := make([]bool, n)
+	ratio := make([]float64, n)
+	durations := make([]*int, n)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("00000000-0000-0000-0000-%012d", i+10)
+		isImage[i] = true
+		ratio[i] = 1
+	}
+	first, err := json.Marshal(map[string]any{
+		"id": ids, "isImage": isImage, "ratio": ratio, "duration": durations,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumb := testPNG(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/timeline/buckets":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[
+				{"timeBucket":"2024-05-02","count":120},
+				{"timeBucket":"2024-05-01","count":1}
+			]`)
+		case r.URL.Path == "/api/timeline/bucket":
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("timeBucket") == "2024-05-01" {
+				io.WriteString(w, `{
+					"id":["`+testAssetID+`"],
+					"isImage":[true],
+					"ratio":[1],
+					"duration":[null]
+				}`)
+				return
+			}
+			w.Write(first)
+		case strings.HasSuffix(r.URL.Path, "/thumbnail"):
+			w.Header().Set("Content-Type", "image/png")
+			w.Write(thumb)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	withTestSession(t)
+
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = srv.URL
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com", Token: "token-123"}
+	a.enterMain()
+
+	waitFor(t, "the first day", func() bool {
+		f := &a.main.photos
+		return f.loaded && len(f.days) == 2 && f.days[0].loaded &&
+			len(f.days[0].photos) == n
+	})
+	tt := ui.NewTester(a.view, 1120, 720)
+	tt.Frame()
+	tt.Frame()
+	if d := a.main.photos.days[1]; d.loaded || d.loading {
+		t.Fatal("the day below the view loaded before it showed")
+	}
+
+	tt.Scroll(600, 400, 0, 20000)
+	tt.Frame()
+	tt.Frame()
+	waitFor(t, "the day scrolled to", func() bool {
+		d := a.main.photos.days[1]
+		return d.loaded && len(d.photos) == 1
+	})
+}
+
+func TestBucketTitle(t *testing.T) {
+	now := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		bucket string
+		title  string
+		week   string
+	}{
+		{"2026-11-01", "11月1日", "周日"},
+		{"2024-05-01", "2024年5月1日", "周三"},
+		{"2026-11", "2026年11月", ""},
+		{"2026", "2026年", ""},
+		{"not a bucket", "not a bucket", ""},
+	}
+	for _, c := range cases {
+		title, week := bucketTitle(c.bucket, now)
+		if title != c.title || week != c.week {
+			t.Errorf("bucketTitle(%q) = %q, %q; want %q, %q",
+				c.bucket, title, week, c.title, c.week)
+		}
+	}
+}
+
+func TestDurationLabel(t *testing.T) {
+	cases := map[int]string{
+		0:       "0:00",
+		42000:   "0:42",
+		3599000: "59:59",
+		3600000: "1:00:00",
+		3661000: "1:01:01",
+	}
+	for ms, want := range cases {
+		if got := durationLabel(ms); got != want {
+			t.Errorf("durationLabel(%d) = %q, want %q", ms, got, want)
+		}
 	}
 }
 
