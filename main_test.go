@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+
+	"immich-mygo/immichapi"
 )
 
 // The view runs without a window in tests, which click and type as a user
@@ -48,6 +51,69 @@ func TestLoginRequiresAddress(t *testing.T) {
 	}
 	if !tt.HasText("请输入服务器地址") {
 		t.Errorf("texts %q after an empty address", tt.Texts())
+	}
+}
+
+func TestLoginRequiresCredentials(t *testing.T) {
+	a := &app{}
+	a.login.stage = stageCredentials
+	a.login.serverURL = "https://photos.example.com"
+	tt := ui.NewTester(a.view, 480, 560)
+	if err := tt.Click("登录"); err != nil {
+		t.Fatal(err)
+	}
+	if !tt.HasText("请输入邮箱") {
+		t.Errorf("texts %q after an empty email", tt.Texts())
+	}
+	if err := tt.Click("邮箱"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Type("ada@example.com")
+	if err := tt.Click("登录"); err != nil {
+		t.Fatal(err)
+	}
+	if !tt.HasText("请输入密码") {
+		t.Errorf("texts %q after an empty password", tt.Texts())
+	}
+	if a.login.signingIn {
+		t.Error("signing in without a password")
+	}
+}
+
+func TestBackToServer(t *testing.T) {
+	a := &app{}
+	a.login.stage = stageCredentials
+	a.login.serverURL = "https://photos.example.com"
+	tt := ui.NewTester(a.view, 480, 560)
+	if err := tt.Click("更换服务器"); err != nil {
+		t.Fatal(err)
+	}
+	if a.login.stage != stageServer {
+		t.Errorf("stage %d after going back, want server", a.login.stage)
+	}
+	if !tt.HasText("服务器地址") {
+		t.Errorf("texts %q after going back", tt.Texts())
+	}
+}
+
+func TestSignOutReturnsToCredentials(t *testing.T) {
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = "https://photos.example.com"
+	a.login.version = "2.1.0"
+	a.login.user = &immichapi.LoginResponseDto{Name: "Ada", UserEmail: "ada@example.com"}
+	tt := ui.NewTester(a.view, 480, 560)
+	if !tt.HasText("欢迎，Ada") {
+		t.Errorf("texts %q while signed in", tt.Texts())
+	}
+	if err := tt.Click("退出登录"); err != nil {
+		t.Fatal(err)
+	}
+	if a.login.stage != stageCredentials || a.login.user != nil {
+		t.Error("still signed in after signing out")
+	}
+	if !tt.HasText("账号登录") {
+		t.Errorf("texts %q after signing out", tt.Texts())
 	}
 }
 
@@ -157,5 +223,62 @@ func TestPingImmichRejectsOtherServers(t *testing.T) {
 				t.Fatal("pingImmich accepted a server that is not Immich")
 			}
 		})
+	}
+}
+
+func TestLoginImmich(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/auth/login" {
+			http.NotFound(w, r)
+			return
+		}
+		var cred struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&cred); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case cred.Email == "ada@example.com" && cred.Password == "secret":
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{
+				"accessToken":"token-123",
+				"userId":"3fa85f64-5717-4562-b3fc-2c963f66afa6",
+				"userEmail":"ada@example.com",
+				"name":"Ada",
+				"profileImagePath":"",
+				"isAdmin":false,
+				"shouldChangePassword":false,
+				"isOnboarded":true
+			}`)
+		case cred.Email == "disabled@example.com":
+			w.WriteHeader(http.StatusUnauthorized)
+			io.WriteString(w, `{"message":"Password login has been disabled","error":"Unauthorized","statusCode":401}`)
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+			io.WriteString(w, `{"message":"Incorrect email or password","error":"Unauthorized","statusCode":401}`)
+		}
+	}))
+	defer srv.Close()
+
+	user, err := loginImmich(srv.URL, "ada@example.com", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.AccessToken != "token-123" || user.Name != "Ada" ||
+		string(user.UserEmail) != "ada@example.com" {
+		t.Errorf("signed in as %+v", user)
+	}
+
+	if _, err := loginImmich(srv.URL, "ada@example.com", "wrong"); err == nil ||
+		err.Error() != "邮箱或密码不正确" {
+		t.Errorf("wrong password: %v", err)
+	}
+	if _, err := loginImmich(srv.URL, "disabled@example.com", "secret"); err == nil ||
+		err.Error() != "该服务器已禁用密码登录" {
+		t.Errorf("disabled password login: %v", err)
 	}
 }

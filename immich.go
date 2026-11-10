@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	openapi_types "github.com/oapi-codegen/runtime/types"
+
 	"immich-mygo/immichapi"
 )
 
@@ -128,6 +130,94 @@ func serverVersion(ctx context.Context, client *immichapi.ClientWithResponses, h
 		return ""
 	}
 	return fmt.Sprintf("%d.%d.%d", legacy.Major, legacy.Minor, legacy.Patch)
+}
+
+// loginImmich signs in at base with email and password, and returns the
+// session the server granted.
+func loginImmich(base, email, password string) (*immichapi.LoginResponseDto, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	client, err := immichapi.NewClientWithResponses(
+		base+"/api",
+		immichapi.WithHTTPClient(&http.Client{Timeout: requestTimeout}),
+	)
+	if err != nil {
+		return nil, errors.New("地址格式不正确，请检查后重试")
+	}
+	resp, err := client.LoginWithResponse(ctx, immichapi.LoginJSONRequestBody{
+		Email:    openapi_types.Email(email),
+		Password: password,
+	})
+	if err != nil {
+		if isJSONError(err) {
+			return nil, errors.New("服务器响应无法识别，可能不是 Immich")
+		}
+		return nil, requestError(err)
+	}
+
+	switch resp.StatusCode() {
+	case http.StatusCreated:
+		if resp.JSON201 == nil || resp.JSON201.AccessToken == "" {
+			return nil, errors.New("服务器没有返回登录令牌")
+		}
+		return resp.JSON201, nil
+	case http.StatusUnauthorized:
+		return nil, errors.New(loginMessage(resp.Body, "邮箱或密码不正确"))
+	case http.StatusBadRequest:
+		return nil, errors.New(loginMessage(resp.Body, "登录请求无效"))
+	case http.StatusTooManyRequests:
+		return nil, errors.New("尝试次数过多，请稍后再试")
+	default:
+		return nil, responseError(resp.StatusCode(), resp.Status())
+	}
+}
+
+// logoutImmich asks the server to invalidate the session token. It is
+// best effort: the app forgets the token whether or not the server
+// answers.
+func logoutImmich(base, token string) {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	client, err := immichapi.NewClientWithResponses(
+		base+"/api",
+		immichapi.WithHTTPClient(&http.Client{Timeout: requestTimeout}),
+		immichapi.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
+			req.Header.Set("Authorization", "Bearer "+token)
+			return nil
+		}),
+	)
+	if err != nil {
+		return
+	}
+	_, _ = client.LogoutWithResponse(ctx)
+}
+
+// loginMessage reads the message of a refused login, in the user's words
+// for the server's common refusals.
+func loginMessage(body []byte, fallback string) string {
+	var resp struct {
+		Message json.RawMessage `json:"message"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil || len(resp.Message) == 0 {
+		return fallback
+	}
+	var msg string
+	if json.Unmarshal(resp.Message, &msg) == nil && msg != "" {
+		switch msg {
+		case "Incorrect email or password":
+			return "邮箱或密码不正确"
+		case "Password login has been disabled":
+			return "该服务器已禁用密码登录"
+		}
+		return msg
+	}
+	var list []string
+	if json.Unmarshal(resp.Message, &list) == nil && len(list) > 0 {
+		return list[0]
+	}
+	return fallback
 }
 
 // getJSON reads endpoint into dst, for the endpoints older servers serve
