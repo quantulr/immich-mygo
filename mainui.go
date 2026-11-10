@@ -63,6 +63,16 @@ func (m *mainState) current() *feed {
 	}
 }
 
+// The window's title bar is hidden (framed): these are where its contents
+// sit, as kero measures its own. barMid is the line the sidebar's header,
+// the card's header and the window controls center on.
+const (
+	barMid    = 30
+	topBar    = 2 * barMid
+	headerH   = 2 * (barMid - 8) // the card's header, clear of its edge
+	controlsW = 3*28 + 2*2
+)
+
 // The icons of the main window, on 16 as kero's, in the text's color.
 var (
 	photosIcon    = svgIcon(`<rect x="2" y="3" width="12" height="10" rx="2"/><circle cx="5.6" cy="6.4" r="1.1"/><path d="M3 11.6l3.2-3 2.4 2.2 1.7-1.5 2.7 2.3"/>`)
@@ -71,6 +81,11 @@ var (
 	refreshIcon   = svgIcon(`<path d="M13.2 8a5.2 5.2 0 1 1-1.5-3.7"/><path d="M13.2 2.7v2.8h-2.8"/>`)
 	signOutIcon   = svgIcon(`<path d="M6.6 3H4.7A1.7 1.7 0 0 0 3 4.7v6.6A1.7 1.7 0 0 0 4.7 13h1.9"/><path d="M10.2 5.4L12.8 8l-2.6 2.6"/><path d="M6.6 8h6.2"/>`)
 	errorIcon     = svgIcon(`<circle cx="8" cy="8" r="5.6"/><path d="M8 5.2v3.4"/><path d="M8 10.9v.1"/>`)
+
+	minimizeIcon = svgIcon(`<path d="M3.5 8h9"/>`)
+	maximizeIcon = svgIcon(`<rect x="3.5" y="3.5" width="9" height="9" rx="1.5"/>`)
+	restoreIcon  = svgIcon(`<rect x="3.5" y="5.5" width="7" height="7" rx="1.2"/><path d="M5.5 3.5h5.5a1.5 1.5 0 0 1 1.5 1.5v5.5"/>`)
+	closeIcon    = svgIcon(`<path d="M4 4l8 8"/><path d="M12 4l-8 8"/>`)
 )
 
 // svgIcon draws an icon of the app's own on 16, as a toolbar glyph.
@@ -84,7 +99,7 @@ func (a *app) mainView(c *ui.Context) {
 	t := c.Theme()
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 		a.mainSidebar(c)
-		ui.Column(c).Grow(1).MinWidth(0).Padding(8).Children(func() {
+		ui.Column(c).Grow(1).MinWidth(0).Padding(8).DragWindow().Children(func() {
 			ui.Column(c).Grow(1).MinHeight(0).Radius(12).Background(cardFace(t)).
 				Border(1, t.Border).Clip().Children(func() {
 				a.cardHeader(c)
@@ -123,9 +138,16 @@ func rowHover(t *ui.Theme) ui.Color {
 // mainSidebar lists where the app goes, and who is signed in.
 func (a *app) mainSidebar(c *ui.Context) {
 	t := c.Theme()
-	ui.Column(c).Width(248).Shrink(0).Background(sidebarTint(t)).
-		Padding(14, 10, 10, 10).Children(func() {
-		ui.Row(c).Padding(0, 6).Gap(10).AlignItems(ui.Center).Children(func() {
+	bar := c.TitleBar()
+	// The room the traffic lights take on macOS, before the header's own
+	// edge; the window controls elsewhere sit over the card's header.
+	lead := float32(6)
+	if !ownControls {
+		lead += bar.Left
+	}
+	ui.Column(c).Width(248).Shrink(0).Background(sidebarTint(t)).DragWindow().
+		Padding(0, 10, 10, 10).Children(func() {
+		ui.Row(c).Height(topBar).Padding(0, 6, 0, lead).Gap(10).AlignItems(ui.Center).DragWindow().Children(func() {
 			ui.Box(c).Size(30, 30).Radius(8).Background(ui.Hex("#ffffff")).Center().Children(func() {
 				if logo != nil {
 					ui.Image(c, logo).Size(26, 26)
@@ -139,7 +161,6 @@ func (a *app) mainSidebar(c *ui.Context) {
 					SingleLine().Ellipsis("…")
 			})
 		})
-		ui.Box(c).Height(14)
 		a.sideSection(c, sectionPhotos, photosIcon)
 		a.sideSection(c, sectionFavorites, favoritesIcon)
 		a.sideSection(c, sectionAlbums, albumsIcon)
@@ -213,12 +234,17 @@ func (a *app) sideUser(c *ui.Context) {
 	})
 }
 
-// cardHeader names the section shown, and offers to load it again.
+// cardHeader names the section shown, and offers to load it again. It is
+// the window's title bar too, and keeps room at its right for the window
+// controls over it.
 func (a *app) cardHeader(c *ui.Context) {
-	ui.Row(c).Height(52).Shrink(0).Padding(0, 12, 0, 18).Gap(8).AlignItems(ui.Center).Children(func() {
+	ui.Row(c).Height(headerH).Shrink(0).Padding(0, 12, 0, 18).Gap(8).AlignItems(ui.Center).DragWindow().Children(func() {
 		ui.Text(c, a.main.section.title()).FontSize(15).FontWeight(600)
 		ui.Spacer(c)
 		a.iconButton(c, refreshIcon, "刷新", a.refreshSection)
+		if ownControls {
+			ui.Box(c).Width(controlsW + 6)
+		}
 	})
 }
 
@@ -235,6 +261,76 @@ func (a *app) iconButton(c *ui.Context, icon *ui.SVG, label string, fn func()) {
 	if b.Clicked() {
 		fn()
 	}
+}
+
+// windowControls are the window's minimize, maximize and close buttons,
+// which the hidden title bar leaves the view to draw (ownControls), as
+// kero draws its own: over the card's header in the main view, and at the
+// login window's top right.
+func (a *app) windowControls(c *ui.Context) {
+	if !ownControls {
+		return
+	}
+	t := c.Theme()
+	top, right := float32(barMid-13), float32(18)
+	if a.login.stage != stageSignedIn {
+		top, right = 10, 10
+	}
+	ui.Row(c).Absolute().Right(right).Top(top).Gap(2).AlignItems(ui.Center).DragWindow().Children(func() {
+		a.controlButtons(c, t)
+	})
+}
+
+// controlButtons are the window controls' three buttons.
+func (a *app) controlButtons(c *ui.Context, t *ui.Theme) {
+	minimize := a.controlButton(c, t, minimizeIcon, "最小化")
+	if minimize.Clicked() && a.win != nil {
+		a.win.Minimize()
+	}
+
+	maximized := a.win != nil && a.win.IsMaximized()
+	icon, label := maximizeIcon, "最大化"
+	if maximized {
+		icon, label = restoreIcon, "还原"
+	}
+	maximize := a.controlButton(c, t, icon, label)
+	// The system's maximize button for the pointer, which brings Windows
+	// 11's snap layouts as it rests there.
+	maximize.MaximizeButton()
+	if maximize.Clicked() && a.win != nil {
+		if maximized {
+			a.win.Unmaximize()
+		} else {
+			a.win.Maximize()
+		}
+	}
+
+	close := ui.ButtonBase(c).Size(28, 26).Radius(6).Center().Label("关闭窗口").Tooltip("关闭窗口")
+	fg := t.TextMuted
+	if close.Hovered() || close.Pressed() {
+		close.Background(t.Danger)
+		fg = ui.Hex("#ffffff")
+	}
+	close.Children(func() { ui.Icon(c, closeIcon).Size(15, 15).TextColor(fg) })
+	if close.Clicked() && a.win != nil {
+		a.win.Close()
+	}
+}
+
+// controlButton is one of the window's own buttons: quiet, and lighting
+// under the pointer.
+func (a *app) controlButton(c *ui.Context, t *ui.Theme, icon *ui.SVG, label string) ui.Element {
+	b := ui.ButtonBase(c).Size(28, 26).Radius(6).Center().Label(label).Tooltip(label)
+	fg := t.TextMuted
+	if b.Pressed() {
+		b.Background(t.SurfacePressed)
+		fg = t.Text
+	} else if b.Hovered() {
+		b.Background(t.SurfaceHover)
+		fg = t.Text
+	}
+	b.Children(func() { ui.Icon(c, icon).Size(15, 15).TextColor(fg) })
+	return b
 }
 
 // cardBody shows the section: its photos, its albums, or how loading them

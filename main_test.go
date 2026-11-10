@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -337,6 +338,25 @@ func TestFetchAccount(t *testing.T) {
 
 	if _, err := fetchAccount(srv.URL, "wrong"); !errors.Is(err, errSessionExpired) {
 		t.Errorf("refused token: %v", err)
+	}
+}
+
+func TestFramedHidesTitleBar(t *testing.T) {
+	old := ownControls
+	defer func() { ownControls = old }()
+
+	ownControls = true
+	opts := framed(mygo.WindowOptions{})
+	if opts.TitleBarStyle != mygo.TitleBarHidden || !opts.HideWindowButtons ||
+		!opts.AutoHideMenuBar {
+		t.Errorf("framed on Windows or Linux: %+v", opts)
+	}
+
+	ownControls = false
+	opts = framed(mygo.WindowOptions{})
+	if opts.TitleBarStyle != mygo.TitleBarHiddenInset || opts.TitleBarHeight != topBar ||
+		opts.TrafficLightPosition == nil {
+		t.Errorf("framed on macOS: %+v", opts)
 	}
 }
 

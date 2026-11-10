@@ -2,10 +2,35 @@ package main
 
 import (
 	"log"
+	"runtime"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
+
+// ownControls tells that the view draws the window controls itself, as
+// kero does: on Windows and Linux the hidden title bar leaves none, while
+// macOS keeps its traffic lights under a hidden inset title bar.
+var ownControls = runtime.GOOS != "darwin"
+
+// framed hides the window's title bar: under the traffic lights on macOS,
+// without its buttons elsewhere, which windowControls draws in the view.
+func framed(opts mygo.WindowOptions) mygo.WindowOptions {
+	if ownControls {
+		opts.TitleBarStyle = mygo.TitleBarHidden
+		opts.HideWindowButtons = true
+		// No menu bar over the sidebar and the card; Alt and F10 still
+		// show the menus.
+		opts.AutoHideMenuBar = true
+		return opts
+	}
+	opts.TitleBarStyle = mygo.TitleBarHiddenInset
+	opts.TitleBarHeight = topBar
+	// The lights are 16 tall, and MyGo puts them a DIP above the position:
+	// centered on barMid, as the sidebar's header and the card's are.
+	opts.TrafficLightPosition = &mygo.Point{X: 18, Y: barMid - 7}
+	return opts
+}
 
 // app is the state the window shows. Its view builds the interface from
 // it, on the main thread, whenever the window needs a frame: after input,
@@ -19,9 +44,10 @@ type app struct {
 func (a *app) view(c *ui.Context) {
 	if a.login.stage == stageSignedIn {
 		a.mainView(c)
-		return
+	} else {
+		a.login.view(c, a)
 	}
-	a.login.view(c, a)
+	a.windowControls(c)
 }
 
 // update applies a change of the state on the main thread, then redraws
@@ -57,7 +83,7 @@ func main() {
 			opts.Width, opts.Height = 1120, 720
 			opts.MinWidth, opts.MinHeight = 720, 520
 		}
-		a.win = mygo.NewWindow(opts)
+		a.win = mygo.NewWindow(framed(opts))
 		if a.login.stage == stageRestoring {
 			go a.restoreSession()
 		}

@@ -58,7 +58,7 @@ type loginState struct {
 
 func (l *loginState) view(c *ui.Context, a *app) {
 	t := c.Theme()
-	ui.Column(c).Fill().Center().Padding(24).Children(func() {
+	ui.Column(c).Fill().Center().Padding(24).DragWindow().Children(func() {
 		ui.Column(c).Width(400).Padding(28).Gap(18).Radius(10).
 			Background(t.Surface).Border(1, t.Border).Children(func() {
 			l.header(c)
@@ -77,7 +77,7 @@ func (l *loginState) view(c *ui.Context, a *app) {
 // header shows the app's mark and name above every step of the flow.
 func (l *loginState) header(c *ui.Context) {
 	t := c.Theme()
-	ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
+	ui.Row(c).Gap(12).AlignItems(ui.Center).DragWindow().Children(func() {
 		ui.Box(c).Size(44, 44).Radius(12).Background(ui.Hex("#ffffff")).Center().Children(func() {
 			if logo != nil {
 				ui.Image(c, logo).Size(36, 36)
