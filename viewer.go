@@ -310,7 +310,10 @@ func (a *app) photoPage(c *ui.Context, v *viewer) {
 	stage.Children(func() {
 		switch {
 		case v.err != nil:
-			a.viewerError(c, v)
+			// The load states center in the photo's room, not the panel's.
+			ui.Box(c).Fill().Padding(0, panel, 0, 0).Children(func() {
+				a.viewerError(c, v)
+			})
 		case v.bm != nil:
 			lay := v.layout(photoStage, v.bm)
 			if lay.w > 0 {
@@ -333,7 +336,7 @@ func (a *app) photoPage(c *ui.Context, v *viewer) {
 				}
 			}
 		default:
-			ui.Column(c).Fill().Center().Gap(10).Children(func() {
+			ui.Column(c).Fill().Padding(0, panel, 0, 0).Center().Gap(10).Children(func() {
 				ui.Spinner(c).Label("正在加载图片").TextColor(ui.RGBA(255, 255, 255, 0.6))
 				ui.Text(c, "正在加载图片…").FontSize(12).TextColor(ui.RGBA(255, 255, 255, 0.6))
 			})

@@ -895,6 +895,9 @@ func TestPhotoPageDetails(t *testing.T) {
 	if err := tt.Click("关闭详情"); err != nil {
 		t.Fatal(err)
 	}
+	// A click that changes the page draws it on the frame after the one
+	// that took it.
+	tt.Frame()
 	tt.Frame()
 	if v := a.main.viewer; v == nil || v.showDetails {
 		t.Error("the details panel is still open")
@@ -906,12 +909,37 @@ func TestPhotoPageDetails(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
+	tt.Frame()
 	if !tt.HasText("隐藏详情") || !tt.HasText("VID_0003.mp4") {
 		t.Errorf("texts %q after opening the details again", tt.Texts())
 	}
 	if a.main.viewer == nil || !a.main.viewer.showDetails {
 		t.Error("the details panel did not open again")
 	}
+
+	// While the image loads, the page says so in the photo's room, clear of
+	// the panel.
+	bm := a.main.viewer.bm
+	a.main.viewer.bm = nil
+	tt.Frame()
+	load, ok := tt.Find("正在加载图片…")
+	if !ok {
+		t.Fatal("the loading text does not show")
+	}
+	prev, okPrev := tt.Find("上一张")
+	title, okTitle := tt.Find("详情")
+	if okPrev && okTitle {
+		// The left arrow sits 16 DIPs into the stage; the panel's title 16
+		// DIPs into the panel.
+		stageLeft, panelLeft := prev.X-16, title.X-16
+		roomCenter := (stageLeft + panelLeft) / 2
+		if center := load.X + load.W/2; center < roomCenter-6 || center > roomCenter+6 {
+			t.Errorf("the loading text centers at %v, the photo's room at %v",
+				center, roomCenter)
+		}
+	}
+	a.main.viewer.bm = bm
+	tt.Frame()
 }
 
 // TestPhotoPageError keeps the page open on a photo whose image the server
