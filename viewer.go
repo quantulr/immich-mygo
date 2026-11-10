@@ -40,6 +40,11 @@ type viewer struct {
 	// attempt numbers the loads, so that one that finishes after the page
 	// moved to another asset is dropped.
 	attempt int
+	// focusStage asks the next frame to give the stage the keyboard, as
+	// the page opens: its box may take the place, and so the state, of
+	// the list it replaced, which AutoFocus would take for an element
+	// already there.
+	focusStage bool
 	// showDetails tells whether the details panel is out; details is what
 	// it shows once loaded, and detailsErr why it did not.
 	showDetails    bool
@@ -66,7 +71,7 @@ func (a *app) openPhoto(f *feed, day, index int) {
 	if !d.loaded || index < 0 || index >= len(d.photos) {
 		return
 	}
-	a.main.viewer = &viewer{}
+	a.main.viewer = &viewer{focusStage: true}
 	a.showViewerPhoto(f, d.key, d.photos[index].ID)
 }
 
@@ -260,7 +265,11 @@ func (v *viewer) photo() *photo {
 // and twice it, and dragging a zoomed photo pans it.
 func (a *app) photoPage(c *ui.Context, v *viewer) {
 	stage := ui.Box(c).Fill().Background(ui.Hex("#0e0f13")).Clip().
-		Focusable().AutoFocus().FocusRing(false)
+		Focusable().FocusRing(false)
+	if v.focusStage {
+		stage.Focus()
+		v.focusStage = false
+	}
 	// The stage's box, from the frame it last showed in: what the zoom
 	// lays the photo out in.
 	bounds := stage.Bounds()
@@ -462,7 +471,7 @@ func (a *app) viewerZoomBar(c *ui.Context, v *viewer, stage ui.Rect, right float
 			a.zoomViewer(z/zoomStep, stage.W/2, stage.H/2, stage)
 		})
 		pct := ui.ButtonBase(c).Height(24).Padding(0, 8).Radius(6).Center().
-			Label("适应窗口").Tooltip("适应窗口")
+			Label("适应窗口").Tooltip("适应窗口").KeepFocus()
 		fg := ui.RGBA(255, 255, 255, 0.92)
 		if z <= 1 {
 			fg = ui.RGBA(255, 255, 255, 0.55)
@@ -486,7 +495,8 @@ func (a *app) viewerZoomBar(c *ui.Context, v *viewer, stage ui.Rect, right float
 
 // viewerZoomButton is one of the zoom bar's round buttons.
 func (a *app) viewerZoomButton(c *ui.Context, icon *ui.SVG, label string, enabled bool, fn func()) {
-	b := ui.ButtonBase(c).Size(24, 24).Radius(6).Center().Label(label).Tooltip(label)
+	b := ui.ButtonBase(c).Size(24, 24).Radius(6).Center().Label(label).Tooltip(label).
+		KeepFocus()
 	fg := ui.RGBA(255, 255, 255, 0.92)
 	if enabled {
 		if b.Pressed() {
@@ -513,7 +523,7 @@ func (a *app) viewerArrow(c *ui.Context, delta int, icon *ui.SVG) {
 	}
 	_, enabled := a.viewerNeighbor(delta)
 	b := ui.ButtonBase(c).Size(40, 40).Radius(20).Center().Label(label).Tooltip(label).
-		Background(ui.RGBA(255, 255, 255, 0.10))
+		Background(ui.RGBA(255, 255, 255, 0.10)).KeepFocus()
 	fg := ui.RGBA(255, 255, 255, 0.92)
 	if enabled {
 		if b.Pressed() {
@@ -558,7 +568,8 @@ func (a *app) detailsButton(c *ui.Context, open bool) {
 	if open {
 		label = "隐藏详情"
 	}
-	b := ui.ButtonBase(c).Size(28, 26).Radius(6).Center().Label(label).Tooltip(label)
+	b := ui.ButtonBase(c).Size(28, 26).Radius(6).Center().Label(label).Tooltip(label).
+		KeepFocus()
 	switch {
 	case b.Pressed():
 		b.Background(t.SurfacePressed)
@@ -586,7 +597,7 @@ func (a *app) viewerDetails(c *ui.Context, v *viewer) {
 			ui.Text(c, "详情").FontSize(13.5).FontWeight(600).TextColor(ui.Hex("#ffffff"))
 			ui.Spacer(c)
 			b := ui.ButtonBase(c).Size(24, 24).Radius(6).Center().
-				Label("关闭详情").Tooltip("关闭详情")
+				Label("关闭详情").Tooltip("关闭详情").KeepFocus()
 			if b.Pressed() {
 				b.Background(ui.RGBA(255, 255, 255, 0.2))
 			} else if b.Hovered() {

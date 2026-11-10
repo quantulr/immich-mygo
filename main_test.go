@@ -718,6 +718,14 @@ func TestPhotoPage(t *testing.T) {
 		t.Errorf("texts %q after the next photo", tt.Texts())
 	}
 
+	// A click on the next button leaves the keyboard on the page: space
+	// does not press the button again.
+	tt.Key(0, ui.KeySpace)
+	tt.Frame()
+	if a.main.viewer == nil || a.main.viewer.id != testOtherAssetID {
+		t.Errorf("space after the next button moved the page to %q", a.main.viewer.id)
+	}
+
 	// The keyboard walks too: right to the video, shown as its still.
 	tt.Key(0, ui.KeyRight)
 	waitFor(t, "the video's still", func() bool {
