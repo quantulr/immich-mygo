@@ -26,13 +26,19 @@ type timelineDay struct {
 	err     error
 }
 
-// photo is an asset of the timeline, and its thumbnail once it loads.
+// photo is an asset of the timeline, and its thumbnail once it loads. Only
+// the photos the timeline shows load theirs; thumbCache may let the ones
+// scrolled away go.
 type photo struct {
 	ID    string
 	Video bool
 	// Duration is how long a video runs, in milliseconds.
 	Duration int
 	Bm       *ui.Bitmap
+	// loading tells a thumbnail is on its way; failed that it did not come,
+	// so that the tile does not ask again.
+	loading bool
+	failed  bool
 }
 
 // assetDetails is what the image page's details panel tells of an asset.

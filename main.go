@@ -39,6 +39,8 @@ type app struct {
 	win   *mygo.Window
 	login loginState
 	main  mainState
+	// thumbs keeps the timeline's thumbnails within a memory budget.
+	thumbs thumbCache
 }
 
 func (a *app) view(c *ui.Context) {

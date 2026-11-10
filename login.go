@@ -416,6 +416,7 @@ func (a *app) signOut() {
 		l.storageErr = ""
 	}
 	a.main = mainState{}
+	a.thumbs.clear()
 	if a.win != nil {
 		a.win.SetMinimumSize(460, 480)
 		a.win.SetSize(480, 520)

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -537,7 +538,7 @@ func TestMainTimeline(t *testing.T) {
 	waitFor(t, "the first day", func() bool {
 		f := &a.main.photos
 		return f.loaded && len(f.days) == 2 && f.days[0].loaded &&
-			len(f.days[0].photos) == 1 && f.days[0].photos[0].Bm != nil
+			len(f.days[0].photos) == 1
 	})
 
 	tt := ui.NewTester(a.view, 1120, 720)
@@ -547,8 +548,15 @@ func TestMainTimeline(t *testing.T) {
 	tt.Frame()
 	waitFor(t, "the second day", func() bool {
 		d := a.main.photos.days[1]
-		return d.loaded && len(d.photos) == 2 &&
-			d.photos[0].Bm != nil && d.photos[1].Bm != nil
+		return d.loaded && len(d.photos) == 2
+	})
+	// The tiles the timeline shows load their thumbnails, not the whole
+	// day.
+	tt.Frame()
+	waitFor(t, "the thumbnails", func() bool {
+		f := &a.main.photos
+		return f.days[0].photos[0].Bm != nil &&
+			f.days[1].photos[0].Bm != nil && f.days[1].photos[1].Bm != nil
 	})
 	tt.Frame()
 
@@ -564,6 +572,98 @@ func TestMainTimeline(t *testing.T) {
 	}
 	if !tt.HasText("0:42") {
 		t.Errorf("texts %q do not show the video's length", tt.Texts())
+	}
+}
+
+// TestThumbnailsLoadAsShown checks that the timeline fetches the
+// thumbnails of the tiles it shows, not those of the whole day, as a day of
+// a large timeline holds far more than the card.
+func TestThumbnailsLoadAsShown(t *testing.T) {
+	const count = 200
+	var requests atomic.Int64
+	thumb := testPNG(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/timeline/buckets":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[{"timeBucket":"2024-05-02","count":`+strconv.Itoa(count)+`}]`)
+		case r.URL.Path == "/api/timeline/bucket":
+			w.Header().Set("Content-Type", "application/json")
+			var b strings.Builder
+			b.WriteString(`{"id":[`)
+			for i := range count {
+				if i > 0 {
+					b.WriteString(",")
+				}
+				fmt.Fprintf(&b, `"00000000-0000-0000-0000-%012d"`, i)
+			}
+			b.WriteString(`],"isImage":[`)
+			for i := range count {
+				if i > 0 {
+					b.WriteString(",")
+				}
+				b.WriteString("true")
+			}
+			b.WriteString(`],"duration":[`)
+			for i := range count {
+				if i > 0 {
+					b.WriteString(",")
+				}
+				b.WriteString("null")
+			}
+			b.WriteString(`]}`)
+			io.WriteString(w, b.String())
+		case strings.HasSuffix(r.URL.Path, "/thumbnail"):
+			requests.Add(1)
+			w.Header().Set("Content-Type", "image/png")
+			w.Write(thumb)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	withTestSession(t)
+
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = srv.URL
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com", Token: "token-123"}
+	a.enterMain()
+
+	tt := ui.NewTester(a.view, 900, 560)
+	tt.Frame()
+	tt.Frame()
+	waitFor(t, "the day", func() bool {
+		f := &a.main.photos
+		return f.loaded && len(f.days) == 1 && f.days[0].loaded &&
+			len(f.days[0].photos) == count
+	})
+	tt.Frame()
+	waitFor(t, "the shown thumbnails", func() bool {
+		for _, p := range a.main.photos.days[0].photos {
+			if p.Bm != nil {
+				return true
+			}
+		}
+		return false
+	})
+
+	// Let the loads the frames started finish, then see that most of the
+	// day asked for nothing.
+	for range 5 {
+		tt.Frame()
+	}
+	loaded := 0
+	for _, p := range a.main.photos.days[0].photos {
+		if p.Bm != nil {
+			loaded++
+		}
+	}
+	if loaded == 0 || loaded >= count/2 {
+		t.Errorf("loaded %d of %d thumbnails of a day the card shows part of", loaded, count)
+	}
+	if n := requests.Load(); n >= count/2 {
+		t.Errorf("requested %d of %d thumbnails of a day the card shows part of", n, count)
 	}
 }
 
@@ -1182,7 +1282,11 @@ func TestAlbumPage(t *testing.T) {
 	waitFor(t, "the album's day", func() bool {
 		f := &a.main.albumFeed
 		return f.loaded && len(f.days) == 1 && f.days[0].loaded &&
-			len(f.days[0].photos) == 2 && f.days[0].photos[0].Bm != nil
+			len(f.days[0].photos) == 2
+	})
+	tt.Frame()
+	waitFor(t, "the album's thumbnails", func() bool {
+		return a.main.albumFeed.days[0].photos[0].Bm != nil
 	})
 	tt.Frame()
 	for _, want := range []string{"旅行", "返回相册", "4月1日", "2 项"} {

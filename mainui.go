@@ -649,6 +649,14 @@ func (a *app) photoTile(c *ui.Context, f *feed, day int, d *timelineDay, j int) 
 			label = fmt.Sprintf("视频 %d", j+1)
 		}
 		tile.Label(label).Tooltip("查看").Cursor(ui.CursorPointer)
+		// Only what the timeline shows has a thumbnail, and the cache
+		// keeps what it shows lately.
+		switch {
+		case p.Bm != nil:
+			a.thumbs.touch(p)
+		case !p.loading && !p.failed:
+			a.requestThumbnail(f, p)
+		}
 	}
 	switch {
 	case p != nil && p.Bm != nil:
@@ -705,7 +713,8 @@ func (a *app) loadShownDays(f *feed, starts []int) {
 }
 
 // loadDay loads one day of the timeline off the UI thread, publishing it
-// through app.update, and its thumbnails after it.
+// through app.update. Its thumbnails load as the tiles show, not with the
+// day.
 func (a *app) loadDay(f *feed, i int) {
 	if i < 0 || i >= len(f.days) || a.login.user == nil || a.login.user.Token == "" {
 		return
@@ -735,10 +744,6 @@ func (a *app) loadDay(f *feed, i int) {
 			d.count = len(photos)
 			d.photos = photos
 		})
-		if err != nil {
-			return
-		}
-		a.loadThumbnails(f, attempt, base, token, photos)
 	}()
 }
 
@@ -837,6 +842,7 @@ func (a *app) refreshSection() {
 // server, growing the window from the login card's size.
 func (a *app) enterMain() {
 	a.main = mainState{}
+	a.thumbs.clear()
 	if a.win != nil {
 		a.win.SetMinimumSize(720, 520)
 		if w, h := a.win.Size(); w < 800 || h < 560 {
@@ -910,33 +916,37 @@ func (a *app) loadTimeline(f *feed) {
 	}()
 }
 
-// loadThumbnails loads the photos' thumbnails, four at a time, so that
-// the timeline fills as they come.
-func (a *app) loadThumbnails(f *feed, attempt int, base, token string, assets []*photo) {
-	var wg sync.WaitGroup
-	workers := make(chan struct{}, 4)
-	for _, p := range assets {
-		if p.Bm != nil {
-			continue
-		}
-		wg.Add(1)
-		workers <- struct{}{}
-		go func(p *photo) {
-			defer wg.Done()
-			defer func() { <-workers }()
-			bm, err := fetchThumbnail(base, token, p.ID)
-			if err != nil {
+// requestThumbnail loads one photo's thumbnail, for the tile that shows it.
+// Only a few load at once; the tiles the budget waits on ask again on a
+// later frame.
+func (a *app) requestThumbnail(f *feed, p *photo) {
+	if a.login.user == nil || a.login.user.Token == "" {
+		return
+	}
+	select {
+	case thumbLoads <- struct{}{}:
+	default:
+		return
+	}
+	p.loading = true
+	attempt := f.attempt
+	base, token := a.login.serverURL, a.login.user.Token
+	go func() {
+		defer func() { <-thumbLoads }()
+		bm, err := fetchThumbnail(base, token, p.ID)
+		a.update(func() {
+			p.loading = false
+			if attempt != f.attempt {
 				return
 			}
-			a.update(func() {
-				if attempt != f.attempt {
-					return
-				}
-				p.Bm = bm
-			})
-		}(p)
-	}
-	wg.Wait()
+			if err != nil {
+				p.failed = true
+				return
+			}
+			p.Bm = bm
+			a.thumbs.put(p)
+		})
+	}()
 }
 
 // loadAlbumCovers loads the covers of the albums, four at a time.
