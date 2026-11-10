@@ -1480,6 +1480,51 @@ func TestMainSections(t *testing.T) {
 	}
 }
 
+// TestAlbumsNewestFirst orders the albums page by the newest asset of each
+// album, those without assets last.
+func TestAlbumsNewestFirst(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/timeline/buckets":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[]`)
+		case "/api/albums":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[
+				{"albumName":"旧","assetCount":1,"id":"00000000-0000-0000-0000-000000000011","endDate":"2023-01-01T00:00:00.000Z"},
+				{"albumName":"空","assetCount":0,"id":"00000000-0000-0000-0000-000000000012"},
+				{"albumName":"新","assetCount":1,"id":"00000000-0000-0000-0000-000000000013","endDate":"2024-06-01T00:00:00.000Z"},
+				{"albumName":"中","assetCount":1,"id":"00000000-0000-0000-0000-000000000014","endDate":"2024-03-01T00:00:00.000Z"}
+			]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	withTestSession(t)
+
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = srv.URL
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com", Token: "token-123"}
+	a.enterMain()
+
+	tt := ui.NewTester(a.view, 1120, 720)
+	if err := tt.Click("相册"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the albums", func() bool {
+		return a.main.albums.loaded && len(a.main.albums.albums) == 4
+	})
+	var names []string
+	for _, al := range a.main.albums.albums {
+		names = append(names, al.Name)
+	}
+	if got := strings.Join(names, ","); got != "新,中,旧,空" {
+		t.Errorf("albums %q, want newest first and empty last", got)
+	}
+}
+
 func TestAlbumPage(t *testing.T) {
 	srv := timelineServer(t)
 	defer srv.Close()

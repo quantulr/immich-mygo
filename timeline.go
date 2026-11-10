@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -76,6 +77,9 @@ type album struct {
 	ID    string
 	Name  string
 	Count int
+	// Latest is when the album's newest asset was taken, zero for an album
+	// without assets.
+	Latest time.Time
 	// Cover is the asset whose thumbnail stands for the album, or "".
 	Cover string
 	Bm    *ui.Bitmap
@@ -213,7 +217,8 @@ func fetchBucket(ctx context.Context, client *immichapi.ClientWithResponses, buc
 	return photos, nil
 }
 
-// fetchAlbums returns the user's albums.
+// fetchAlbums returns the user's albums, those whose newest asset is the
+// most recent first.
 func fetchAlbums(base, token string) ([]*album, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
@@ -237,11 +242,19 @@ func fetchAlbums(base, token string) ([]*album, error) {
 	albums := make([]*album, 0, len(*resp.JSON200))
 	for _, d := range *resp.JSON200 {
 		a := &album{ID: d.Id.String(), Name: d.AlbumName, Count: d.AssetCount}
+		if d.EndDate != nil {
+			a.Latest = *d.EndDate
+		}
 		if d.AlbumThumbnailAssetId != nil {
 			a.Cover = d.AlbumThumbnailAssetId.String()
 		}
 		albums = append(albums, a)
 	}
+	// The newest assets lead; albums without any keep the server's order
+	// at the end.
+	sort.SliceStable(albums, func(i, j int) bool {
+		return albums[i].Latest.After(albums[j].Latest)
+	})
 	return albums, nil
 }
 
