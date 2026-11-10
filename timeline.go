@@ -35,6 +35,31 @@ type photo struct {
 	Bm       *ui.Bitmap
 }
 
+// assetDetails is what the image page's details panel tells of an asset.
+type assetDetails struct {
+	Name        string
+	Taken       time.Time
+	TimeZone    string
+	Width       int
+	Height      int
+	Size        int64
+	Make        string
+	Model       string
+	Lens        string
+	FNumber     float64
+	Exposure    string
+	ISO         int
+	Focal       float64
+	City        string
+	State       string
+	Country     string
+	Latitude    *float64
+	Longitude   *float64
+	Description string
+	// Duration is how long a video runs, in milliseconds.
+	Duration int
+}
+
 // album is an album of the server, and the thumbnail of its cover once it
 // loads.
 type album struct {
@@ -238,6 +263,88 @@ func fetchAssetImage(base, token, id string, size immichapi.AssetMediaSize, what
 		return nil, fmt.Errorf("无法读取%s：%v", what, err)
 	}
 	return bm, nil
+}
+
+// fetchAssetDetails returns what the image page's details panel tells of an
+// asset: its name and time, its dimensions and size, and the camera, lens
+// and place its EXIF data names.
+func fetchAssetDetails(base, token, id string) (*assetDetails, error) {
+	assetID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	client, err := immichClient(base, token)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.GetAssetInfoWithResponse(ctx, assetID, &immichapi.GetAssetInfoParams{})
+	if err != nil {
+		return nil, requestError(err)
+	}
+	if err := statusErr(resp.StatusCode(), resp.Status()); err != nil {
+		return nil, err
+	}
+	if resp.JSON200 == nil {
+		return nil, errors.New("服务器没有返回详情")
+	}
+
+	d := resp.JSON200
+	ad := &assetDetails{
+		Name:     d.OriginalFileName,
+		Taken:    d.LocalDateTime,
+		Width:    intOf(d.Width),
+		Height:   intOf(d.Height),
+		Duration: intOf(d.Duration),
+	}
+	if e := d.ExifInfo; e != nil {
+		ad.TimeZone = stringOf(e.TimeZone)
+		ad.Size = int64(intOf(e.FileSizeInByte))
+		ad.Make, ad.Model = stringOf(e.Make), stringOf(e.Model)
+		ad.Lens = stringOf(e.LensModel)
+		ad.FNumber = floatOf(e.FNumber)
+		ad.Exposure = stringOf(e.ExposureTime)
+		ad.ISO = intOf(e.Iso)
+		ad.Focal = floatOf(e.FocalLength)
+		ad.City, ad.State, ad.Country = stringOf(e.City), stringOf(e.State), stringOf(e.Country)
+		ad.Latitude, ad.Longitude = e.Latitude, e.Longitude
+		ad.Description = stringOf(e.Description)
+		// The EXIF dimensions are the camera's own; the asset's may be the
+		// preview's.
+		if w := intOf(e.ExifImageWidth); w > 0 {
+			ad.Width = w
+		}
+		if h := intOf(e.ExifImageHeight); h > 0 {
+			ad.Height = h
+		}
+	}
+	return ad, nil
+}
+
+// stringOf is the string an optional response field holds, or "".
+func stringOf(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// intOf is the int an optional response field holds, or 0.
+func intOf(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// floatOf is the float an optional response field holds, or 0.
+func floatOf(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // weekdays are the days of the week as the timeline's headings show them.

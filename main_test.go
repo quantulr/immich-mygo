@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -475,6 +476,42 @@ func timelineServer(t *testing.T) *httptest.Server {
 			strings.HasSuffix(r.URL.Path, "/thumbnail"):
 			w.Header().Set("Content-Type", "image/png")
 			w.Write(thumb)
+		case strings.HasPrefix(r.URL.Path, "/api/assets/"):
+			id := strings.TrimPrefix(r.URL.Path, "/api/assets/")
+			name, kind, duration := "IMG_0001.jpg", "IMAGE", ""
+			width, height := 4032, 3024
+			switch id {
+			case testOtherAssetID:
+				name = "IMG_0002.jpg"
+			case testVideoID:
+				name, kind, duration = "VID_0003.mp4", "VIDEO", `"duration":42000,`
+				width, height = 1920, 1080
+			case testAssetID:
+			default:
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{
+				"originalFileName":"`+name+`",
+				"localDateTime":"2024-05-02T14:32:00.000Z",
+				`+duration+`
+				"width":`+strconv.Itoa(width)+`,
+				"height":`+strconv.Itoa(height)+`,
+				"type":"`+kind+`",
+				"exifInfo":{
+					"make":"Apple","model":"iPhone 15 Pro",
+					"lensModel":"iPhone 15 Pro back camera 6.765mm f/1.78",
+					"fNumber":1.78,"exposureTime":"1/120","iso":100,"focalLength":6.765,
+					"fileSizeInByte":4194304,
+					"city":"杭州","state":"浙江","country":"中国",
+					"description":"午后的西湖",
+					"latitude":30.2741,"longitude":120.1551,
+					"timeZone":"Asia/Shanghai",
+					"exifImageWidth":`+strconv.Itoa(width)+`,
+					"exifImageHeight":`+strconv.Itoa(height)+`
+				}
+			}`)
 		case r.URL.Path == "/api/albums":
 			w.Header().Set("Content-Type", "application/json")
 			io.WriteString(w, `[
@@ -751,6 +788,129 @@ func TestPhotoPageZoom(t *testing.T) {
 	}
 	if !tt.HasText("100%") {
 		t.Errorf("texts %q on the next photo", tt.Texts())
+	}
+}
+
+// TestPhotoPageDetails opens the image page's details panel, shows what it
+// tells, keeps the wheel off the photo where the panel stands, follows the
+// page to other photos, and closes it from the panel and the header.
+func TestPhotoPageDetails(t *testing.T) {
+	srv := timelineServer(t)
+	defer srv.Close()
+	withTestSession(t)
+
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = srv.URL
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com", Token: "token-123"}
+	a.enterMain()
+
+	tt := ui.NewTester(a.view, 1120, 720)
+	tt.Frame()
+	tt.Frame()
+	waitFor(t, "the days", func() bool {
+		f := &a.main.photos
+		return f.loaded && len(f.days) == 2 && f.days[0].loaded &&
+			len(f.days[0].photos) == 1 && f.days[1].loaded &&
+			len(f.days[1].photos) == 2
+	})
+	tt.Frame()
+	if err := tt.Click("照片 1"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the image", func() bool {
+		return a.main.viewer != nil && a.main.viewer.bm != nil
+	})
+	tt.Frame()
+
+	// The header button opens the panel, which loads what the asset says.
+	if err := tt.Click("详情"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the details", func() bool {
+		v := a.main.viewer
+		return v != nil && v.showDetails && v.details != nil
+	})
+	tt.Frame()
+	for _, want := range []string{
+		"隐藏详情", "关闭详情", "文件名", "IMG_0001.jpg",
+		"拍摄时间", "2024年5月2日 14:32 · Asia/Shanghai",
+		"尺寸", "4032 × 3024 · 12.2 MP", "大小", "4.0 MB",
+		"相机", "Apple iPhone 15 Pro",
+		"镜头", "iPhone 15 Pro back camera 6.765mm f/1.78",
+		"曝光", "f/1.78 · 1/120 · ISO 100 · 6.765 mm",
+		"位置", "杭州 · 浙江 · 中国", "描述", "午后的西湖",
+	} {
+		if !tt.HasText(want) {
+			t.Errorf("texts %q do not show %q", tt.Texts(), want)
+		}
+	}
+
+	// The wheel over the panel leaves the photo alone; over the photo it
+	// zooms.
+	if z := a.main.viewer.zoomFactor(); z != 1 {
+		t.Errorf("zoom %v on opening the details, want 1", z)
+	}
+	tt.Wheel(1050, 300, 0, -120)
+	if z := a.main.viewer.zoomFactor(); z != 1 {
+		t.Errorf("zoom %v after the wheel over the details, want 1", z)
+	}
+	tt.Wheel(600, 400, 0, -120)
+	if z := a.main.viewer.zoomFactor(); z <= 1 {
+		t.Errorf("zoom %v after the wheel over the photo, want more than 1", z)
+	}
+	tt.Key(0, ui.Key0)
+	tt.Frame()
+
+	// The next photo brings its own details with it.
+	if err := tt.Click("下一张"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the next image's details", func() bool {
+		v := a.main.viewer
+		return v != nil && v.id == testOtherAssetID && v.bm != nil &&
+			v.details != nil && v.details.Name == "IMG_0002.jpg"
+	})
+	tt.Frame()
+	if !tt.HasText("IMG_0002.jpg") || tt.HasText("IMG_0001.jpg") {
+		t.Errorf("texts %q on the next photo's details", tt.Texts())
+	}
+
+	// A video's details tell how long it runs.
+	if err := tt.Click("下一张"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the video's details", func() bool {
+		v := a.main.viewer
+		return v != nil && v.id == testVideoID && v.details != nil &&
+			v.details.Name == "VID_0003.mp4"
+	})
+	tt.Frame()
+	if !tt.HasText("VID_0003.mp4") || !tt.HasText("时长") || !tt.HasText("0:42") {
+		t.Errorf("texts %q on the video's details", tt.Texts())
+	}
+
+	// The panel's close button hides it; the header button brings it back
+	// without loading it again.
+	if err := tt.Click("关闭详情"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if v := a.main.viewer; v == nil || v.showDetails {
+		t.Error("the details panel is still open")
+	}
+	if tt.HasText("VID_0003.mp4") {
+		t.Errorf("texts %q after closing the details", tt.Texts())
+	}
+	if err := tt.Click("详情"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("隐藏详情") || !tt.HasText("VID_0003.mp4") {
+		t.Errorf("texts %q after opening the details again", tt.Texts())
+	}
+	if a.main.viewer == nil || !a.main.viewer.showDetails {
+		t.Error("the details panel did not open again")
 	}
 }
 

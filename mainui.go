@@ -123,6 +123,7 @@ var (
 	forwardIcon   = svgIcon(`<path d="M6.2 3.5L10.7 8l-4.5 4.5"/><path d="M10.5 8h-7"/>`)
 	minusIcon     = svgIcon(`<path d="M4 8h8"/>`)
 	plusIcon      = svgIcon(`<path d="M8 4v8"/><path d="M4 8h8"/>`)
+	infoIcon      = svgIcon(`<circle cx="8" cy="8" r="5.6"/><path d="M8 7.2v3.4"/><path d="M8 4.9v.1"/>`)
 	playIcon      = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M5 3.4l7 4.6-7 4.6z" fill="currentColor"/></svg>`))
 
 	minimizeIcon = svgIcon(`<path d="M3.5 8h9"/>`)
@@ -308,7 +309,8 @@ func (a *app) cardHeader(c *ui.Context) {
 	t := c.Theme()
 	p := a.main.sidebarProgress
 	pad := 18 + 34*(1-p)
-	viewerOpen := a.main.viewer != nil
+	viewer := a.main.viewer
+	viewerOpen := viewer != nil
 	album := a.main.albumOpen
 	albumOpen := !viewerOpen && a.main.section == sectionAlbums && album != nil
 	h := ui.Row(c).Height(headerH).Shrink(0).Padding(0, 12, 0, pad).Gap(8).AlignItems(ui.Center).DragWindow()
@@ -342,7 +344,9 @@ func (a *app) cardHeader(c *ui.Context) {
 			ui.Text(c, count).FontSize(11.5).TextColor(t.TextMuted)
 		}
 		ui.Spacer(c)
-		if !viewerOpen {
+		if viewerOpen {
+			a.detailsButton(c, viewer.showDetails)
+		} else {
 			a.iconButton(c, refreshIcon, "刷新", a.refreshSection)
 		}
 		if ownControls {
