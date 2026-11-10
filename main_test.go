@@ -530,6 +530,158 @@ func TestMainTimeline(t *testing.T) {
 	}
 }
 
+// TestPhotoPage opens a photo from the timeline, walks the timeline with
+// the buttons and the keyboard, and returns to it with Escape.
+func TestPhotoPage(t *testing.T) {
+	srv := timelineServer(t)
+	defer srv.Close()
+	withTestSession(t)
+
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = srv.URL
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com", Token: "token-123"}
+	a.enterMain()
+
+	tt := ui.NewTester(a.view, 1120, 720)
+	tt.Frame()
+	tt.Frame()
+	waitFor(t, "the days", func() bool {
+		f := &a.main.photos
+		return f.loaded && len(f.days) == 2 && f.days[0].loaded &&
+			len(f.days[0].photos) == 1 && f.days[1].loaded &&
+			len(f.days[1].photos) == 2
+	})
+	tt.Frame()
+
+	if err := tt.Click("照片 1"); err != nil {
+		t.Fatal(err)
+	}
+	if a.main.viewer == nil {
+		t.Fatal("the image page did not open")
+	}
+	waitFor(t, "the image", func() bool { return a.main.viewer.bm != nil })
+	tt.Frame()
+	for _, want := range []string{"返回时间线", "5月2日", "1 / 3"} {
+		if !tt.HasText(want) {
+			t.Errorf("texts %q on the image page do not show %q", tt.Texts(), want)
+		}
+	}
+
+	// The next photo is the first of the older day.
+	if err := tt.Click("下一张"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the next image", func() bool {
+		return a.main.viewer != nil && a.main.viewer.id == testOtherAssetID &&
+			a.main.viewer.bm != nil
+	})
+	tt.Frame()
+	if !tt.HasText("5月1日") || !tt.HasText("2 / 3") {
+		t.Errorf("texts %q after the next photo", tt.Texts())
+	}
+
+	// The keyboard walks too: right to the video, shown as its still.
+	tt.Key(0, ui.KeyRight)
+	waitFor(t, "the video's still", func() bool {
+		return a.main.viewer != nil && a.main.viewer.id == testVideoID &&
+			a.main.viewer.bm != nil
+	})
+	tt.Frame()
+	if !tt.HasText("视频") || !tt.HasText("0:42") || !tt.HasText("3 / 3") {
+		t.Errorf("texts %q on the video", tt.Texts())
+	}
+	// The last photo has no next: its button is disabled, and the page
+	// stays.
+	tt.Click("下一张")
+	if a.main.viewer == nil || a.main.viewer.id != testVideoID {
+		t.Error("the page moved past the last photo")
+	}
+	tt.Frame()
+	if !tt.HasText("3 / 3") {
+		t.Errorf("texts %q after the last photo's next", tt.Texts())
+	}
+
+	// Escape returns to the timeline.
+	tt.Key(0, ui.KeyEscape)
+	tt.Frame()
+	if a.main.viewer != nil {
+		t.Error("the image page is still open after Escape")
+	}
+	if !tt.HasText("照片 1") {
+		t.Errorf("texts %q back in the timeline", tt.Texts())
+	}
+}
+
+// TestPhotoPageError keeps the page open on a photo whose image the server
+// will not give, offering to try again.
+func TestPhotoPageError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/timeline/buckets":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[{"timeBucket":"2024-05-02","count":1}]`)
+		case "/api/timeline/bucket":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{
+				"id":["`+testAssetID+`"],
+				"isImage":[true],
+				"ratio":[1.5],
+				"duration":[null]
+			}`)
+		default:
+			http.Error(w, "boom", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+	withTestSession(t)
+
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = srv.URL
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com", Token: "token-123"}
+	a.enterMain()
+
+	tt := ui.NewTester(a.view, 1120, 720)
+	tt.Frame()
+	tt.Frame()
+	waitFor(t, "the day", func() bool {
+		f := &a.main.photos
+		return f.loaded && len(f.days) == 1 && f.days[0].loaded &&
+			len(f.days[0].photos) == 1
+	})
+	tt.Frame()
+
+	if err := tt.Click("照片 1"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the failed image", func() bool {
+		return a.main.viewer != nil && a.main.viewer.err != nil
+	})
+	tt.Frame()
+	if a.main.viewer.bm != nil {
+		t.Error("a bitmap after the image failed")
+	}
+	if !tt.HasText("无法显示这张图片") || !tt.HasText("重试") {
+		t.Errorf("texts %q on the failed image", tt.Texts())
+	}
+
+	// Trying again keeps the page, and the error.
+	if err := tt.Click("重试"); err != nil {
+		t.Fatal(err)
+	}
+	if a.main.viewer == nil {
+		t.Fatal("the page closed on a retry")
+	}
+	waitFor(t, "the retry to fail", func() bool {
+		return a.main.viewer != nil && a.main.viewer.err != nil
+	})
+	tt.Frame()
+	if !tt.HasText("无法显示这张图片") {
+		t.Errorf("texts %q after a retry", tt.Texts())
+	}
+}
+
 // TestTimelineLoadsScrolledDays fills more than the card with one day: the
 // day below it loads as the timeline scrolls to it, not before.
 func TestTimelineLoadsScrolledDays(t *testing.T) {
@@ -708,6 +860,30 @@ func TestAlbumPage(t *testing.T) {
 		if !tt.HasText(want) {
 			t.Errorf("texts %q in the album do not show %q", tt.Texts(), want)
 		}
+	}
+
+	// A photo of the album opens the image page, and the way back returns
+	// to the album's days, not to the grid.
+	if err := tt.Click("照片 1"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the album's image", func() bool {
+		v := a.main.viewer
+		return v != nil && v.id == testOtherAssetID && v.bm != nil
+	})
+	tt.Frame()
+	if !tt.HasText("4月1日") || !tt.HasText("1 / 2") {
+		t.Errorf("texts %q on the album's image page", tt.Texts())
+	}
+	if err := tt.Click("返回时间线"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if a.main.viewer != nil || a.main.albumOpen == nil {
+		t.Error("the image page did not return to the album")
+	}
+	if !tt.HasText("返回相册") || !tt.HasText("4月1日") {
+		t.Errorf("texts %q back in the album", tt.Texts())
 	}
 
 	if err := tt.Click("返回相册"); err != nil {

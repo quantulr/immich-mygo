@@ -68,6 +68,8 @@ type mainState struct {
 	// it loads into.
 	albumOpen *album
 	albumFeed feed
+	// viewer is the image page shown in place of the timeline, or nil.
+	viewer *viewer
 	// sidebarHidden hides the sidebar, which the card's header then offers
 	// to bring back. sidebarProgress is how far it shows this frame, 0 to
 	// 1, which the header reads.
@@ -118,6 +120,7 @@ var (
 	errorIcon     = svgIcon(`<circle cx="8" cy="8" r="5.6"/><path d="M8 5.2v3.4"/><path d="M8 10.9v.1"/>`)
 	sidebarIcon   = svgIcon(`<rect x="2" y="3" width="12" height="10" rx="2"/><path d="M6 3v10"/>`)
 	backIcon      = svgIcon(`<path d="M9.8 3.5L5.3 8l4.5 4.5"/><path d="M5.5 8h7"/>`)
+	forwardIcon   = svgIcon(`<path d="M6.2 3.5L10.7 8l-4.5 4.5"/><path d="M10.5 8h-7"/>`)
 	playIcon      = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M5 3.4l7 4.6-7 4.6z" fill="currentColor"/></svg>`))
 
 	minimizeIcon = svgIcon(`<path d="M3.5 8h9"/>`)
@@ -297,13 +300,15 @@ func (a *app) sideUser(c *ui.Context) {
 // the window's title bar too, and keeps room at its right for the window
 // controls over it. As the sidebar hides, the button that brings it back
 // comes at its left, and the title makes room. An album open from the grid
-// names itself here, with the way back to the grid.
+// names itself here, with the way back to the grid, and the image page
+// names its day, with the way back to the timeline.
 func (a *app) cardHeader(c *ui.Context) {
 	t := c.Theme()
 	p := a.main.sidebarProgress
 	pad := 18 + 34*(1-p)
+	viewerOpen := a.main.viewer != nil
 	album := a.main.albumOpen
-	albumOpen := a.main.section == sectionAlbums && album != nil
+	albumOpen := !viewerOpen && a.main.section == sectionAlbums && album != nil
 	h := ui.Row(c).Height(headerH).Shrink(0).Padding(0, 12, 0, pad).Gap(8).AlignItems(ui.Center).DragWindow()
 	h.Children(func() {
 		if p < 0.5 {
@@ -313,19 +318,31 @@ func (a *app) cardHeader(c *ui.Context) {
 			})
 		}
 		title := a.main.section.title()
-		if albumOpen {
+		var week, count string
+		switch {
+		case viewerOpen:
+			a.iconButton(c, backIcon, "返回时间线", a.closeViewer)
+			title, week = a.viewerCaption()
+			count = a.viewerCounter()
+		case albumOpen:
 			a.iconButton(c, backIcon, "返回相册", a.closeAlbum)
 			title = album.Name
+			if n := a.albumCount(); n > 0 {
+				count = fmt.Sprintf("%d 项", n)
+			}
 		}
 		ui.Text(c, title).FontSize(15).FontWeight(600).
 			SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
-		if albumOpen {
-			if n := a.albumCount(); n > 0 {
-				ui.Text(c, fmt.Sprintf("%d 项", n)).FontSize(11.5).TextColor(t.TextMuted)
-			}
+		if week != "" {
+			ui.Text(c, week).FontSize(11.5).TextColor(t.TextMuted)
+		}
+		if count != "" {
+			ui.Text(c, count).FontSize(11.5).TextColor(t.TextMuted)
 		}
 		ui.Spacer(c)
-		a.iconButton(c, refreshIcon, "刷新", a.refreshSection)
+		if !viewerOpen {
+			a.iconButton(c, refreshIcon, "刷新", a.refreshSection)
+		}
 		if ownControls {
 			ui.Box(c).Width(controlsW + 6)
 		}
@@ -440,9 +457,13 @@ func (a *app) controlButton(c *ui.Context, t *ui.Theme, icon *ui.SVG, label stri
 	return b
 }
 
-// cardBody shows the section: its days, its albums, or how loading them
-// went.
+// cardBody shows the section: its days, its albums, the image page, or how
+// loading them went.
 func (a *app) cardBody(c *ui.Context) {
+	if v := a.main.viewer; v != nil {
+		a.photoPage(c, v)
+		return
+	}
 	f := a.main.current()
 	switch {
 	case f.err != nil:
@@ -544,7 +565,7 @@ func (a *app) timeline(c *ui.Context, f *feed) {
 		to := min(from+cols, n)
 		ui.Grid(c).Columns(cols).Gap(photoGap).Margin(0, 0, photoGap, 0).Children(func() {
 			for j := from; j < to; j++ {
-				a.photoTile(c, d, j)
+				a.photoTile(c, f, i, d, j)
 			}
 		})
 	}).Grow(1).Padding(12)
@@ -608,13 +629,20 @@ func (a *app) dayHeading(c *ui.Context, f *feed, i int, d *timelineDay) {
 }
 
 // photoTile is one photo of the timeline, its thumbnail once it loads, and
-// for a video how long it runs.
-func (a *app) photoTile(c *ui.Context, d *timelineDay, j int) {
+// for a video how long it runs. A click opens it on the image page.
+func (a *app) photoTile(c *ui.Context, f *feed, day int, d *timelineDay, j int) {
 	t := c.Theme()
 	tile := ui.Box(c).Height(photoTileH).Radius(8).Clip().Background(t.SurfaceHover)
 	var p *photo
 	if d.loaded && j < len(d.photos) {
 		p = d.photos[j]
+	}
+	if p != nil {
+		label := fmt.Sprintf("照片 %d", j+1)
+		if p.Video {
+			label = fmt.Sprintf("视频 %d", j+1)
+		}
+		tile.Label(label).Tooltip("查看").Cursor(ui.CursorPointer)
 	}
 	switch {
 	case p != nil && p.Bm != nil:
@@ -632,6 +660,9 @@ func (a *app) photoTile(c *ui.Context, d *timelineDay, j int) {
 		tile.Center().Children(func() {
 			ui.Icon(c, photosIcon).Size(20, 20).TextColor(t.TextMuted)
 		})
+	}
+	if p != nil && tile.Clicked() {
+		a.openPhoto(f, day, j)
 	}
 }
 
@@ -752,14 +783,20 @@ func (a *app) closeAlbum() {
 }
 
 // selectSection shows another section, loading it the first time. Asking
-// for the albums again leaves an open album for the grid.
+// for the section shown again leaves the image page, or an open album for
+// the grid.
 func (a *app) selectSection(s section) {
 	if a.main.section == s {
+		if a.main.viewer != nil {
+			a.closeViewer()
+			return
+		}
 		if s == sectionAlbums && a.main.albumOpen != nil {
 			a.closeAlbum()
 		}
 		return
 	}
+	a.closeViewer()
 	if s != sectionAlbums {
 		a.main.albumOpen = nil
 	}

@@ -204,6 +204,17 @@ func fetchAlbums(base, token string) ([]*album, error) {
 
 // fetchThumbnail returns the thumbnail of an asset.
 func fetchThumbnail(base, token, id string) (*ui.Bitmap, error) {
+	return fetchAssetImage(base, token, id, immichapi.AssetMediaSizeThumbnail, "缩略图")
+}
+
+// fetchPreview returns the larger image of an asset, as the image page
+// shows it: the size Immich keeps for the screen, short of the original's.
+func fetchPreview(base, token, id string) (*ui.Bitmap, error) {
+	return fetchAssetImage(base, token, id, immichapi.AssetMediaSizePreview, "图片")
+}
+
+// fetchAssetImage returns one of the images Immich stores of an asset.
+func fetchAssetImage(base, token, id string, size immichapi.AssetMediaSize, what string) (*ui.Bitmap, error) {
 	assetID, err := uuid.Parse(id)
 	if err != nil {
 		return nil, err
@@ -215,7 +226,6 @@ func fetchThumbnail(base, token, id string) (*ui.Bitmap, error) {
 	if err != nil {
 		return nil, err
 	}
-	size := immichapi.AssetMediaSizeThumbnail
 	resp, err := client.ViewAssetWithResponse(ctx, assetID, &immichapi.ViewAssetParams{Size: &size})
 	if err != nil {
 		return nil, requestError(err)
@@ -225,7 +235,7 @@ func fetchThumbnail(base, token, id string) (*ui.Bitmap, error) {
 	}
 	bm, err := ui.DecodeBitmap(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("无法读取缩略图：%v", err)
+		return nil, fmt.Errorf("无法读取%s：%v", what, err)
 	}
 	return bm, nil
 }
