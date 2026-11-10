@@ -126,6 +126,7 @@ var (
 	infoIcon      = svgIcon(`<circle cx="8" cy="8" r="5.6"/><path d="M8 7.2v3.4"/><path d="M8 4.9v.1"/>`)
 	playIcon      = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M5 3.4l7 4.6-7 4.6z" fill="currentColor"/></svg>`))
 	pauseIcon     = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M4.6 3.2h2.2v9.6H4.6zM9.2 3.2h2.2v9.6H9.2z" fill="currentColor"/></svg>`))
+	livePhotoIcon = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.15" stroke-dasharray="5.8 2.84" stroke-linecap="round"/><circle cx="8" cy="8" r="2.1" fill="currentColor"/></svg>`))
 	soundIcon     = svgIcon(`<path d="M3 6.1h2.3L8.6 3.4v9.2L5.3 9.9H3z"/><path d="M10.8 6.3a2.4 2.4 0 0 1 0 3.4"/><path d="M12.4 4.9a4.7 4.7 0 0 1 0 6.2"/>`)
 	mutedIcon     = svgIcon(`<path d="M3 6.1h2.3L8.6 3.4v9.2L5.3 9.9H3z"/><path d="M11 6.4l3 3.2"/><path d="M14 6.4l-3 3.2"/>`)
 
@@ -665,8 +666,11 @@ func (a *app) photoTile(c *ui.Context, f *feed, day int, d *timelineDay, j int) 
 	case p != nil && p.Bm != nil:
 		tile.Children(func() {
 			ui.Image(c, p.Bm).Fill().Fit(ui.Cover)
-			if p.Video {
+			switch {
+			case p.Video:
 				a.videoBadge(c, p.Duration)
+			case p.Live:
+				a.livePhotoBadge(c)
 			}
 		})
 	case p != nil && p.Video:
@@ -674,8 +678,12 @@ func (a *app) photoTile(c *ui.Context, f *feed, day int, d *timelineDay, j int) 
 			ui.Icon(c, playIcon).Size(20, 20).TextColor(t.TextMuted)
 		})
 	default:
+		icon := photosIcon
+		if p != nil && p.Live {
+			icon = livePhotoIcon
+		}
 		tile.Center().Children(func() {
-			ui.Icon(c, photosIcon).Size(20, 20).TextColor(t.TextMuted)
+			ui.Icon(c, icon).Size(20, 20).TextColor(t.TextMuted)
 		})
 	}
 	if p != nil && tile.Clicked() {
@@ -691,6 +699,15 @@ func (a *app) videoBadge(c *ui.Context, ms int) {
 		if ms > 0 {
 			ui.Text(c, durationLabel(ms)).FontSize(10.5).TextColor(ui.Hex("#ffffff"))
 		}
+	})
+}
+
+// livePhotoBadge marks a live photo's tile: a still the server keeps a
+// video of, as the image page tells.
+func (a *app) livePhotoBadge(c *ui.Context) {
+	ui.Box(c).Absolute().Left(6).Bottom(6).Size(20, 20).Radius(10).
+		Background(ui.RGBA(0, 0, 0, 0.55)).Center().Label("实况照片").Children(func() {
+		ui.Icon(c, livePhotoIcon).Size(12, 12).TextColor(ui.Hex("#ffffff"))
 	})
 }
 

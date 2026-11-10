@@ -354,11 +354,16 @@ func (a *app) photoPage(c *ui.Context, v *viewer) {
 			}
 			if isVideo {
 				a.viewerVideoMark(c, p.Duration)
-			} else if lay.maxX > 0 || lay.maxY > 0 {
-				if dragging {
-					stage.Cursor(ui.CursorGrabbing)
-				} else {
-					stage.Cursor(ui.CursorGrab)
+			} else {
+				if p.Live {
+					a.viewerLiveMark(c)
+				}
+				if lay.maxX > 0 || lay.maxY > 0 {
+					if dragging {
+						stage.Cursor(ui.CursorGrabbing)
+					} else {
+						stage.Cursor(ui.CursorGrab)
+					}
 				}
 			}
 		default:
@@ -909,6 +914,15 @@ func (a *app) viewerVideoMark(c *ui.Context, ms int) {
 		Background(ui.RGBA(0, 0, 0, 0.55)).AlignItems(ui.Center).Children(func() {
 		ui.Icon(c, playIcon).Size(10, 10).TextColor(ui.Hex("#ffffff"))
 		ui.Text(c, text).FontSize(11.5).TextColor(ui.Hex("#ffffff"))
+	})
+}
+
+// viewerLiveMark notes that the still is a live photo's.
+func (a *app) viewerLiveMark(c *ui.Context) {
+	ui.Row(c).Absolute().Left(20).Bottom(20).Height(26).Padding(0, 10).Gap(5).Radius(13).
+		Background(ui.RGBA(0, 0, 0, 0.55)).AlignItems(ui.Center).Children(func() {
+		ui.Icon(c, livePhotoIcon).Size(12, 12).TextColor(ui.Hex("#ffffff"))
+		ui.Text(c, "实况照片").FontSize(11.5).TextColor(ui.Hex("#ffffff"))
 	})
 }
 

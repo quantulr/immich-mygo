@@ -1177,6 +1177,69 @@ func detailsServer(t *testing.T, info http.HandlerFunc) *httptest.Server {
 	}))
 }
 
+// TestLivePhotoBadge marks a live photo, a still the server keeps a video
+// of, on its tile and its page.
+func TestLivePhotoBadge(t *testing.T) {
+	thumb := testPNG(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/timeline/buckets":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[{"timeBucket":"2024-05-02","count":1}]`)
+		case r.URL.Path == "/api/timeline/bucket":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{
+				"id":["`+testAssetID+`"],
+				"isImage":[true],
+				"ratio":[1.5],
+				"duration":[null],
+				"livePhotoVideoId":["`+testVideoID+`"]
+			}`)
+		case strings.HasSuffix(r.URL.Path, "/thumbnail"):
+			w.Header().Set("Content-Type", "image/png")
+			w.Write(thumb)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	withTestSession(t)
+
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = srv.URL
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com", Token: "token-123"}
+	a.enterMain()
+
+	tt := ui.NewTester(a.view, 1120, 720)
+	tt.Frame()
+	tt.Frame()
+	waitFor(t, "the day", func() bool {
+		f := &a.main.photos
+		return f.loaded && len(f.days) == 1 && f.days[0].loaded &&
+			len(f.days[0].photos) == 1
+	})
+	tt.Frame()
+	if p := a.main.photos.days[0].photos[0]; !p.Live || p.Video {
+		t.Errorf("photo %+v, want a live photo", p)
+	}
+	if _, ok := tt.Find("实况照片"); !ok {
+		t.Errorf("texts %q on the tile do not mark it live", tt.Texts())
+	}
+
+	// The image page marks it too, beside its still.
+	if err := tt.Click("照片 1"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the image", func() bool {
+		return a.main.viewer != nil && a.main.viewer.bm != nil
+	})
+	tt.Frame()
+	if !tt.HasText("实况照片") {
+		t.Errorf("texts %q on the image page do not mark it live", tt.Texts())
+	}
+}
+
 // TestPhotoPageError keeps the page open on a photo whose image the server
 // will not give, offering to try again.
 func TestPhotoPageError(t *testing.T) {
