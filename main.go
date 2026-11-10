@@ -34,6 +34,7 @@ func (a *app) update(fn func()) {
 func main() {
 	a := &app{}
 	mygo.App.WhenReady(func() {
+		a.prepareSession()
 		a.win = mygo.NewWindow(mygo.WindowOptions{
 			Title:     "Immich",
 			Width:     480,
@@ -45,6 +46,9 @@ func main() {
 			// The window shows the interface MyGo draws, not a web page.
 			Content: ui.View(a.view),
 		})
+		if a.login.stage == stageRestoring {
+			go a.restoreSession()
+		}
 	})
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)

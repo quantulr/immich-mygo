@@ -2,11 +2,11 @@ package main
 
 import (
 	_ "embed"
+	"errors"
+	"log"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
-
-	"immich-mygo/immichapi"
 )
 
 //go:embed resources/icon.png
@@ -27,6 +27,7 @@ type loginStage uint8
 
 const (
 	stageServer loginStage = iota
+	stageRestoring
 	stageCredentials
 	stageSignedIn
 )
@@ -49,7 +50,10 @@ type loginState struct {
 	signingIn   bool
 	loginErr    string
 	authAttempt int
-	user        *immichapi.LoginResponseDto
+	user        *account
+	// storageErr tells what went wrong saving or reading the session in
+	// the system's storage, where the flow itself went ahead.
+	storageErr string
 }
 
 func (l *loginState) view(c *ui.Context, a *app) {
@@ -59,6 +63,8 @@ func (l *loginState) view(c *ui.Context, a *app) {
 			Background(t.Surface).Border(1, t.Border).Children(func() {
 			l.header(c)
 			switch l.stage {
+			case stageRestoring:
+				a.restoring(c)
 			case stageCredentials:
 				a.credentials(c)
 			case stageSignedIn:
@@ -116,6 +122,21 @@ func (a *app) serverForm(c *ui.Context) {
 	})
 }
 
+// restoring is the step while the app checks the token of the last run.
+func (a *app) restoring(c *ui.Context) {
+	l := &a.login
+	t := c.Theme()
+	ui.Column(c).Gap(6).Children(func() {
+		ui.Text(c, "正在恢复登录").FontSize(18).Bold()
+		ui.Text(c, l.serverURL).FontSize(12).TextColor(t.TextMuted).SingleLine()
+	})
+	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Spinner(c).Label("正在恢复登录")
+		ui.Text(c, "正在验证登录状态…").FontSize(12).TextColor(t.TextMuted)
+	})
+	ui.Button(c, "取消").OnClick(a.cancelRestore)
+}
+
 // credentials is the second step: the account on the checked server.
 func (a *app) credentials(c *ui.Context) {
 	l := &a.login
@@ -151,6 +172,9 @@ func (a *app) credentials(c *ui.Context) {
 	if l.loginErr != "" {
 		ui.Text(c, l.loginErr).FontSize(12).TextColor(t.Danger)
 	}
+	if l.storageErr != "" {
+		ui.Text(c, l.storageErr).FontSize(12).TextColor(t.Warning)
+	}
 	ui.Column(c).Gap(10).Children(func() {
 		ui.PrimaryButton(c, "登录").Disabled(l.signingIn).OnClick(a.signIn)
 		if l.signingIn {
@@ -172,7 +196,7 @@ func (a *app) signedIn(c *ui.Context) {
 		if l.user.Name != "" {
 			name = l.user.Name
 		}
-		email = string(l.user.UserEmail)
+		email = l.user.Email
 	}
 	ui.Column(c).Gap(6).Children(func() {
 		ui.Text(c, "欢迎，"+name).FontSize(20).Bold()
@@ -188,7 +212,93 @@ func (a *app) signedIn(c *ui.Context) {
 		}
 		ui.Text(c, status).FontSize(12).TextColor(t.Success)
 	})
+	if l.storageErr != "" {
+		ui.Text(c, l.storageErr).FontSize(12).TextColor(t.Warning)
+	}
 	ui.Button(c, "退出登录").OnClick(a.signOut)
+}
+
+// prepareSession loads what the login flow needs from the last run,
+// before the window shows. It reads the file only: the token, which may
+// make the system ask the user something, comes from the credential
+// store off the UI thread in restoreSession.
+func (a *app) prepareSession() {
+	meta, err := sessions.loadMeta()
+	if err != nil {
+		log.Printf("loading the saved session: %v", err)
+		return
+	}
+	if meta.ServerURL == "" {
+		return
+	}
+	l := &a.login
+	l.serverURL = meta.ServerURL
+	l.version = meta.Version
+	l.email = meta.UserEmail
+	l.stage = stageRestoring
+}
+
+// restoreSession signs in with the token of the last run, once the window
+// exists. The token is verified with the server, which also tells whether
+// the account changed.
+func (a *app) restoreSession() {
+	l := &a.login
+	token, err := sessions.token()
+	if err != nil {
+		log.Printf("reading the saved token: %v", err)
+		a.update(func() {
+			if l.stage != stageRestoring {
+				return
+			}
+			l.stage = stageCredentials
+			l.storageErr = "无法读取系统凭据：" + err.Error()
+		})
+		return
+	}
+	if token == "" {
+		a.update(func() {
+			if l.stage != stageRestoring {
+				return
+			}
+			l.stage = stageCredentials
+		})
+		return
+	}
+
+	base := l.serverURL
+	user, err := fetchAccount(base, token)
+	a.update(func() {
+		if l.stage != stageRestoring {
+			// Cancelled, or signed in by another step.
+			return
+		}
+		l.user = nil
+		switch {
+		case err == nil:
+			l.user = user
+			l.loginErr = ""
+			l.storageErr = ""
+			l.stage = stageSignedIn
+		case errors.Is(err, errSessionExpired):
+			if err := sessions.clearToken(); err != nil {
+				log.Printf("clearing the expired token: %v", err)
+			}
+			l.stage = stageCredentials
+			l.loginErr = "登录已过期，请重新登录"
+		default:
+			// The token may be good, the server reachable later: keep it.
+			l.stage = stageCredentials
+			l.loginErr = "无法恢复登录：" + err.Error()
+		}
+	})
+}
+
+// cancelRestore stops waiting for the token check and asks for the
+// password instead.
+func (a *app) cancelRestore() {
+	l := &a.login
+	l.stage = stageCredentials
+	l.loginErr = ""
 }
 
 // serverURLChanged forgets what the check of the previous address found,
@@ -249,8 +359,8 @@ func (a *app) connect() {
 }
 
 // signIn signs in on the checked server with the email and password the
-// user typed. Slow work runs off the UI thread and publishes through
-// app.update.
+// user typed, then keeps the session for the next run. Slow work runs off
+// the UI thread and publishes through app.update.
 func (a *app) signIn() {
 	l := &a.login
 	if l.signingIn {
@@ -269,21 +379,40 @@ func (a *app) signIn() {
 	l.signingIn = true
 	l.authAttempt++
 	authAttempt := l.authAttempt
-	base, password := l.serverURL, l.password
+	base, version, password := l.serverURL, l.version, l.password
 	go func() {
 		user, err := loginImmich(base, email, password)
+		if err != nil {
+			a.update(func() {
+				if authAttempt != l.authAttempt {
+					return
+				}
+				l.signingIn = false
+				l.loginErr = err.Error()
+			})
+			return
+		}
+		meta := storedSession{
+			ServerURL: base,
+			Version:   version,
+			UserID:    user.ID,
+			UserName:  user.Name,
+			UserEmail: user.Email,
+			IsAdmin:   user.Admin,
+		}
+		storageErr := ""
+		if err := sessions.save(meta, user.Token); err != nil {
+			storageErr = "无法保存登录状态，下次启动需要重新登录：" + err.Error()
+		}
 		a.update(func() {
 			if authAttempt != l.authAttempt {
-				// The flow moved on while the request ran.
 				return
 			}
 			l.signingIn = false
-			if err != nil {
-				l.loginErr = err.Error()
-				return
-			}
 			l.user = user
 			l.password = ""
+			l.loginErr = ""
+			l.storageErr = storageErr
 			l.stage = stageSignedIn
 		})
 	}()
@@ -300,16 +429,23 @@ func (a *app) backToServer() {
 }
 
 // signOut signs out of the server and returns to the login step. The
-// server invalidates the token in the background; the app forgets it now.
+// server invalidates the token in the background; the saved session
+// loses its token now, keeping only what the next run prefills.
 func (a *app) signOut() {
 	l := &a.login
 	l.authAttempt++
 	l.signingIn = false
 	l.loginErr = ""
 	l.password = ""
-	if l.user != nil && l.user.AccessToken != "" {
-		base, token := l.serverURL, l.user.AccessToken
+	if l.user != nil && l.user.Token != "" {
+		base, token := l.serverURL, l.user.Token
 		go logoutImmich(base, token)
+	}
+	if err := sessions.clearToken(); err != nil {
+		log.Printf("clearing the saved token: %v", err)
+		l.storageErr = "无法清除已保存的登录状态：" + err.Error()
+	} else {
+		l.storageErr = ""
 	}
 	l.user = nil
 	l.stage = stageCredentials

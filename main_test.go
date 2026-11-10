@@ -2,14 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
-
-	"immich-mygo/immichapi"
 )
 
 // The view runs without a window in tests, which click and type as a user
@@ -96,12 +95,31 @@ func TestBackToServer(t *testing.T) {
 	}
 }
 
+func TestCancelRestore(t *testing.T) {
+	a := &app{}
+	a.login.stage = stageRestoring
+	a.login.serverURL = "https://photos.example.com"
+	tt := ui.NewTester(a.view, 480, 520)
+	if !tt.HasText("正在验证登录状态") {
+		t.Errorf("texts %q while restoring", tt.Texts())
+	}
+	if err := tt.Click("取消"); err != nil {
+		t.Fatal(err)
+	}
+	if a.login.stage != stageCredentials {
+		t.Errorf("stage %d after cancelling, want credentials", a.login.stage)
+	}
+	if !tt.HasText("账号登录") {
+		t.Errorf("texts %q after cancelling", tt.Texts())
+	}
+}
+
 func TestSignOutReturnsToCredentials(t *testing.T) {
 	a := &app{}
 	a.login.stage = stageSignedIn
 	a.login.serverURL = "https://photos.example.com"
 	a.login.version = "2.1.0"
-	a.login.user = &immichapi.LoginResponseDto{Name: "Ada", UserEmail: "ada@example.com"}
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com"}
 	tt := ui.NewTester(a.view, 480, 560)
 	if !tt.HasText("欢迎，Ada") {
 		t.Errorf("texts %q while signed in", tt.Texts())
@@ -268,8 +286,8 @@ func TestLoginImmich(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if user.AccessToken != "token-123" || user.Name != "Ada" ||
-		string(user.UserEmail) != "ada@example.com" {
+	if user.Token != "token-123" || user.Name != "Ada" ||
+		user.Email != "ada@example.com" {
 		t.Errorf("signed in as %+v", user)
 	}
 
@@ -280,5 +298,39 @@ func TestLoginImmich(t *testing.T) {
 	if _, err := loginImmich(srv.URL, "disabled@example.com", "secret"); err == nil ||
 		err.Error() != "该服务器已禁用密码登录" {
 		t.Errorf("disabled password login: %v", err)
+	}
+}
+
+func TestFetchAccount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/users/me" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer token-123" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{
+			"id":"3fa85f64-5717-4562-b3fc-2c963f66afa6",
+			"email":"ada@example.com",
+			"name":"Ada",
+			"isAdmin":true
+		}`)
+	}))
+	defer srv.Close()
+
+	user, err := fetchAccount(srv.URL, "token-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.ID != "3fa85f64-5717-4562-b3fc-2c963f66afa6" || user.Name != "Ada" ||
+		user.Email != "ada@example.com" || !user.Admin || user.Token != "token-123" {
+		t.Errorf("account %+v", user)
+	}
+
+	if _, err := fetchAccount(srv.URL, "wrong"); !errors.Is(err, errSessionExpired) {
+		t.Errorf("refused token: %v", err)
 	}
 }

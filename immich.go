@@ -28,6 +28,19 @@ type serverInfo struct {
 	version string
 }
 
+// account is a signed-in user: who they are, and the token that proves
+// it to the server.
+type account struct {
+	ID    string
+	Name  string
+	Email string
+	Admin bool
+	Token string
+}
+
+// errSessionExpired is what a token the server refuses fails with.
+var errSessionExpired = errors.New("登录已过期，请重新登录")
+
 // normalizeServerURL turns what the user typed into the server's base
 // address: an http or https URL, without /api and without a trailing
 // slash. A missing scheme is https, as in a browser's address bar.
@@ -133,15 +146,12 @@ func serverVersion(ctx context.Context, client *immichapi.ClientWithResponses, h
 }
 
 // loginImmich signs in at base with email and password, and returns the
-// session the server granted.
-func loginImmich(base, email, password string) (*immichapi.LoginResponseDto, error) {
+// account the server granted.
+func loginImmich(base, email, password string) (*account, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 
-	client, err := immichapi.NewClientWithResponses(
-		base+"/api",
-		immichapi.WithHTTPClient(&http.Client{Timeout: requestTimeout}),
-	)
+	client, err := immichClient(base, "")
 	if err != nil {
 		return nil, errors.New("地址格式不正确，请检查后重试")
 	}
@@ -161,13 +171,58 @@ func loginImmich(base, email, password string) (*immichapi.LoginResponseDto, err
 		if resp.JSON201 == nil || resp.JSON201.AccessToken == "" {
 			return nil, errors.New("服务器没有返回登录令牌")
 		}
-		return resp.JSON201, nil
+		u := resp.JSON201
+		return &account{
+			ID:    u.UserId.String(),
+			Name:  u.Name,
+			Email: string(u.UserEmail),
+			Admin: u.IsAdmin,
+			Token: u.AccessToken,
+		}, nil
 	case http.StatusUnauthorized:
 		return nil, errors.New(loginMessage(resp.Body, "邮箱或密码不正确"))
 	case http.StatusBadRequest:
 		return nil, errors.New(loginMessage(resp.Body, "登录请求无效"))
 	case http.StatusTooManyRequests:
 		return nil, errors.New("尝试次数过多，请稍后再试")
+	default:
+		return nil, responseError(resp.StatusCode(), resp.Status())
+	}
+}
+
+// fetchAccount asks the server at base who token belongs to. A token the
+// server refuses is errSessionExpired; the account keeps it for the
+// calls that follow.
+func fetchAccount(base, token string) (*account, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	client, err := immichClient(base, token)
+	if err != nil {
+		return nil, errors.New("地址格式不正确，请检查后重试")
+	}
+	resp, err := client.GetMyUserWithResponse(ctx)
+	if err != nil {
+		if isJSONError(err) {
+			return nil, errors.New("服务器响应无法识别，可能不是 Immich")
+		}
+		return nil, requestError(err)
+	}
+	switch resp.StatusCode() {
+	case http.StatusOK:
+		if resp.JSON200 == nil {
+			return nil, errors.New("服务器没有返回用户信息")
+		}
+		u := resp.JSON200
+		return &account{
+			ID:    u.Id.String(),
+			Name:  u.Name,
+			Email: string(u.Email),
+			Admin: u.IsAdmin,
+			Token: token,
+		}, nil
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return nil, errSessionExpired
 	default:
 		return nil, responseError(resp.StatusCode(), resp.Status())
 	}
@@ -180,18 +235,27 @@ func logoutImmich(base, token string) {
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 
-	client, err := immichapi.NewClientWithResponses(
-		base+"/api",
-		immichapi.WithHTTPClient(&http.Client{Timeout: requestTimeout}),
-		immichapi.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
-			req.Header.Set("Authorization", "Bearer "+token)
-			return nil
-		}),
-	)
+	client, err := immichClient(base, token)
 	if err != nil {
 		return
 	}
 	_, _ = client.LogoutWithResponse(ctx)
+}
+
+// immichClient returns a client for base, an address normalizeServerURL
+// returned, with the request timeout. A token, when not empty, goes in
+// the Authorization header of every request.
+func immichClient(base, token string) (*immichapi.ClientWithResponses, error) {
+	opts := []immichapi.ClientOption{
+		immichapi.WithHTTPClient(&http.Client{Timeout: requestTimeout}),
+	}
+	if token != "" {
+		opts = append(opts, immichapi.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
+			req.Header.Set("Authorization", "Bearer "+token)
+			return nil
+		}))
+	}
+	return immichapi.NewClientWithResponses(base+"/api", opts...)
 }
 
 // loginMessage reads the message of a refused login, in the user's words
