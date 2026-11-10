@@ -613,6 +613,147 @@ func TestPhotoPage(t *testing.T) {
 	}
 }
 
+// TestPhotoPageZoom zooms the photo with the buttons, the wheel, a double
+// click and the keyboard, pans it with a drag, and shows another photo at
+// fit again.
+func TestPhotoPageZoom(t *testing.T) {
+	srv := timelineServer(t)
+	defer srv.Close()
+	withTestSession(t)
+
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = srv.URL
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com", Token: "token-123"}
+	a.enterMain()
+
+	tt := ui.NewTester(a.view, 1120, 720)
+	tt.Frame()
+	tt.Frame()
+	waitFor(t, "the days", func() bool {
+		f := &a.main.photos
+		return f.loaded && len(f.days) == 2 && f.days[0].loaded &&
+			len(f.days[0].photos) == 1 && f.days[1].loaded &&
+			len(f.days[1].photos) == 2
+	})
+	tt.Frame()
+	if err := tt.Click("照片 1"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the image", func() bool {
+		return a.main.viewer != nil && a.main.viewer.bm != nil
+	})
+	tt.Frame()
+	tt.Frame()
+
+	if z := a.main.viewer.zoomFactor(); z != 1 {
+		t.Errorf("zoom %v on opening, want 1", z)
+	}
+	if !tt.HasText("100%") {
+		t.Errorf("texts %q at fit", tt.Texts())
+	}
+
+	// The buttons step the zoom, and the percentage tells it.
+	if err := tt.Click("放大"); err != nil {
+		t.Fatal(err)
+	}
+	if z := a.main.viewer.zoomFactor(); z != zoomStep {
+		t.Errorf("zoom %v after zooming in, want %v", z, zoomStep)
+	}
+	tt.Frame()
+	if !tt.HasText("125%") {
+		t.Errorf("texts %q after zooming in", tt.Texts())
+	}
+	if err := tt.Click("缩小"); err != nil {
+		t.Fatal(err)
+	}
+	if z := a.main.viewer.zoomFactor(); z != 1 {
+		t.Errorf("zoom %v after zooming out, want 1", z)
+	}
+
+	// The wheel zooms about the pointer, and the percentage goes back to
+	// fit.
+	tt.Wheel(600, 400, 0, -120)
+	if z := a.main.viewer.zoomFactor(); z <= 1 {
+		t.Errorf("zoom %v after the wheel, want more than 1", z)
+	}
+	tt.Frame()
+	if err := tt.Click("适应窗口"); err != nil {
+		t.Fatal(err)
+	}
+	if z, x, y := a.main.viewer.zoomFactor(), a.main.viewer.panX, a.main.viewer.panY; z != 1 || x != 0 || y != 0 {
+		t.Errorf("zoom %v, pan (%v, %v) after going back to fit", z, x, y)
+	}
+	tt.Frame()
+	if !tt.HasText("100%") {
+		t.Errorf("texts %q back at fit", tt.Texts())
+	}
+
+	// A double click zooms to twice the fit, and again shows it at fit.
+	tt.Advance(600 * time.Millisecond)
+	tt.ClickAt(600, 400)
+	tt.ClickAt(600, 400)
+	tt.Frame()
+	if z := a.main.viewer.zoomFactor(); z != 2 {
+		t.Errorf("zoom %v after a double click, want 2", z)
+	}
+	tt.Advance(600 * time.Millisecond)
+	tt.ClickAt(600, 400)
+	tt.ClickAt(600, 400)
+	tt.Frame()
+	if z := a.main.viewer.zoomFactor(); z != 1 {
+		t.Errorf("zoom %v after another double click, want 1", z)
+	}
+
+	// A drag pans the zoomed photo.
+	tt.Advance(600 * time.Millisecond)
+	tt.ClickAt(600, 400)
+	tt.ClickAt(600, 400)
+	tt.Frame()
+	beforeX, beforeY := a.main.viewer.panX, a.main.viewer.panY
+	tt.Advance(600 * time.Millisecond)
+	tt.Press(600, 400)
+	tt.Move(540, 360)
+	tt.Frame()
+	tt.Release(540, 360)
+	tt.Frame()
+	if a.main.viewer.panX >= beforeX || a.main.viewer.panY >= beforeY {
+		t.Errorf("pan (%v, %v) after a drag, was (%v, %v)",
+			a.main.viewer.panX, a.main.viewer.panY, beforeX, beforeY)
+	}
+
+	// The keyboard zooms about the center, and 0 goes back to fit.
+	tt.Key(0, ui.Key0)
+	tt.Frame()
+	if z := a.main.viewer.zoomFactor(); z != 1 {
+		t.Errorf("zoom %v after 0, want 1", z)
+	}
+	tt.Key(0, ui.KeyEqual)
+	if z := a.main.viewer.zoomFactor(); z != zoomStep {
+		t.Errorf("zoom %v after +, want %v", z, zoomStep)
+	}
+	tt.Frame()
+	if !tt.HasText("125%") {
+		t.Errorf("texts %q after +", tt.Texts())
+	}
+
+	// Another photo shows at fit again.
+	if err := tt.Click("下一张"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the next image", func() bool {
+		return a.main.viewer != nil && a.main.viewer.bm != nil &&
+			a.main.viewer.id == testOtherAssetID
+	})
+	tt.Frame()
+	if z := a.main.viewer.zoomFactor(); z != 1 {
+		t.Errorf("zoom %v on the next photo, want 1", z)
+	}
+	if !tt.HasText("100%") {
+		t.Errorf("texts %q on the next photo", tt.Texts())
+	}
+}
+
 // TestPhotoPageError keeps the page open on a photo whose image the server
 // will not give, offering to try again.
 func TestPhotoPageError(t *testing.T) {

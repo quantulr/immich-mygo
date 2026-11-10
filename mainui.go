@@ -121,6 +121,8 @@ var (
 	sidebarIcon   = svgIcon(`<rect x="2" y="3" width="12" height="10" rx="2"/><path d="M6 3v10"/>`)
 	backIcon      = svgIcon(`<path d="M9.8 3.5L5.3 8l4.5 4.5"/><path d="M5.5 8h7"/>`)
 	forwardIcon   = svgIcon(`<path d="M6.2 3.5L10.7 8l-4.5 4.5"/><path d="M10.5 8h-7"/>`)
+	minusIcon     = svgIcon(`<path d="M4 8h8"/>`)
+	plusIcon      = svgIcon(`<path d="M8 4v8"/><path d="M4 8h8"/>`)
 	playIcon      = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M5 3.4l7 4.6-7 4.6z" fill="currentColor"/></svg>`))
 
 	minimizeIcon = svgIcon(`<path d="M3.5 8h9"/>`)
