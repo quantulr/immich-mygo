@@ -43,14 +43,13 @@ func (s section) title() string {
 // feed is what a section shows, and how loading it went.
 type feed struct {
 	// days are the timeline's days, newest first, their assets loading as
-	// the section shows them; favorites tells that they are the user's
-	// favorites.
-	days      []*timelineDay
-	favorites bool
-	albums    []*album
-	loading   bool
-	loaded    bool
-	err       error
+	// the section shows them; source says whose days they are.
+	days    []*timelineDay
+	source  timelineSource
+	albums  []*album
+	loading bool
+	loaded  bool
+	err     error
 	// attempt numbers the loads, so that one that finishes after a newer
 	// one started is dropped.
 	attempt int
@@ -65,6 +64,10 @@ type mainState struct {
 	photos    feed
 	favorites feed
 	albums    feed
+	// albumOpen is the album shown from the grid, and albumFeed the days
+	// it loads into.
+	albumOpen *album
+	albumFeed feed
 	// sidebarHidden hides the sidebar, which the card's header then offers
 	// to bring back. sidebarProgress is how far it shows this frame, 0 to
 	// 1, which the header reads.
@@ -77,6 +80,9 @@ func (m *mainState) current() *feed {
 	case sectionFavorites:
 		return &m.favorites
 	case sectionAlbums:
+		if m.albumOpen != nil {
+			return &m.albumFeed
+		}
 		return &m.albums
 	default:
 		return &m.photos
@@ -111,6 +117,7 @@ var (
 	signOutIcon   = svgIcon(`<path d="M6.6 3H4.7A1.7 1.7 0 0 0 3 4.7v6.6A1.7 1.7 0 0 0 4.7 13h1.9"/><path d="M10.2 5.4L12.8 8l-2.6 2.6"/><path d="M6.6 8h6.2"/>`)
 	errorIcon     = svgIcon(`<circle cx="8" cy="8" r="5.6"/><path d="M8 5.2v3.4"/><path d="M8 10.9v.1"/>`)
 	sidebarIcon   = svgIcon(`<rect x="2" y="3" width="12" height="10" rx="2"/><path d="M6 3v10"/>`)
+	backIcon      = svgIcon(`<path d="M9.8 3.5L5.3 8l4.5 4.5"/><path d="M5.5 8h7"/>`)
 	playIcon      = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M5 3.4l7 4.6-7 4.6z" fill="currentColor"/></svg>`))
 
 	minimizeIcon = svgIcon(`<path d="M3.5 8h9"/>`)
@@ -289,10 +296,14 @@ func (a *app) sideUser(c *ui.Context) {
 // cardHeader names the section shown, and offers to load it again. It is
 // the window's title bar too, and keeps room at its right for the window
 // controls over it. As the sidebar hides, the button that brings it back
-// comes at its left, and the title makes room.
+// comes at its left, and the title makes room. An album open from the grid
+// names itself here, with the way back to the grid.
 func (a *app) cardHeader(c *ui.Context) {
+	t := c.Theme()
 	p := a.main.sidebarProgress
 	pad := 18 + 34*(1-p)
+	album := a.main.albumOpen
+	albumOpen := a.main.section == sectionAlbums && album != nil
 	h := ui.Row(c).Height(headerH).Shrink(0).Padding(0, 12, 0, pad).Gap(8).AlignItems(ui.Center).DragWindow()
 	h.Children(func() {
 		if p < 0.5 {
@@ -301,13 +312,41 @@ func (a *app) cardHeader(c *ui.Context) {
 				a.iconButton(c, sidebarIcon, "显示边栏", a.toggleSidebar)
 			})
 		}
-		ui.Text(c, a.main.section.title()).FontSize(15).FontWeight(600)
+		title := a.main.section.title()
+		if albumOpen {
+			a.iconButton(c, backIcon, "返回相册", a.closeAlbum)
+			title = album.Name
+		}
+		ui.Text(c, title).FontSize(15).FontWeight(600).
+			SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+		if albumOpen {
+			if n := a.albumCount(); n > 0 {
+				ui.Text(c, fmt.Sprintf("%d 项", n)).FontSize(11.5).TextColor(t.TextMuted)
+			}
+		}
 		ui.Spacer(c)
 		a.iconButton(c, refreshIcon, "刷新", a.refreshSection)
 		if ownControls {
 			ui.Box(c).Width(controlsW + 6)
 		}
 	})
+}
+
+// albumCount is how many assets the open album holds: what the grid knew
+// of it, or the days as they load.
+func (a *app) albumCount() int {
+	f := &a.main.albumFeed
+	if !f.loaded {
+		if a.main.albumOpen != nil {
+			return a.main.albumOpen.Count
+		}
+		return 0
+	}
+	n := 0
+	for _, d := range f.days {
+		n += d.count
+	}
+	return n
 }
 
 // toggleSidebar hides the sidebar, or brings it back.
@@ -417,6 +456,14 @@ func (a *app) cardBody(c *ui.Context) {
 	case !f.loaded:
 		a.loadingState(c)
 	case a.main.section == sectionAlbums:
+		if a.main.albumOpen != nil {
+			if len(f.days) == 0 {
+				a.emptyState(c, albumsIcon, "相册是空的", "在 Immich 里向相册添加照片后，它们会出现在这里。", "刷新", a.refreshSection)
+				return
+			}
+			a.timeline(c, f)
+			return
+		}
 		if len(f.albums) == 0 {
 			a.emptyState(c, albumsIcon, "还没有相册", "在 Immich 里创建相册后，它们会出现在这里。", "刷新", a.refreshSection)
 			return
@@ -632,9 +679,9 @@ func (a *app) loadDay(f *feed, i int) {
 	}
 	d.loading = true
 	attempt := f.attempt
-	base, token, favorites := a.login.serverURL, a.login.user.Token, f.favorites
+	base, token, src := a.login.serverURL, a.login.user.Token, f.source
 	go func() {
-		photos, err := fetchDayAssets(base, token, d.key, favorites)
+		photos, err := fetchDayAssets(base, token, d.key, src)
 		a.update(func() {
 			if attempt != f.attempt {
 				return
@@ -659,11 +706,13 @@ func (a *app) loadDay(f *feed, i int) {
 }
 
 // albumGrid shows the section's albums: a cover, a name and its count.
+// A click opens the album's days.
 func (a *app) albumGrid(c *ui.Context, f *feed) {
 	t := c.Theme()
 	ui.GridView(c, &f.grid, len(f.albums), 168, 176, func(i int) {
 		al := f.albums[i]
-		ui.Column(c).Fill().Gap(4).Children(func() {
+		cell := ui.Column(c).Fill().Gap(4).Label(al.Name).Cursor(ui.CursorPointer)
+		cell.Children(func() {
 			cover := ui.Box(c).Grow(1).MinHeight(0).Radius(10).Clip().Background(t.SurfaceHover)
 			if al.Bm != nil {
 				cover.Children(func() { ui.Image(c, al.Bm).Fill().Fit(ui.Cover) })
@@ -675,18 +724,56 @@ func (a *app) albumGrid(c *ui.Context, f *feed) {
 			ui.Text(c, al.Name).FontSize(12.5).FontWeight(500).SingleLine().Ellipsis("…")
 			ui.Text(c, fmt.Sprintf("%d 项", al.Count)).FontSize(11).TextColor(t.TextMuted)
 		})
+		if cell.Clicked() {
+			a.openAlbum(al)
+		}
 	}).Grow(1).Padding(12)
 }
 
-// selectSection shows another section, loading it the first time.
-func (a *app) selectSection(s section) {
-	if a.main.section == s {
+// openAlbum shows an album's days in place of the grid. The album last
+// open keeps its days, which show at once.
+func (a *app) openAlbum(al *album) {
+	a.main.albumOpen = al
+	f := &a.main.albumFeed
+	if f.source.album == al.ID && (f.loaded || f.loading) {
 		return
 	}
-	a.main.section = s
-	if f := a.main.current(); !f.loaded && !f.loading {
-		a.loadFeed(f, s)
+	// The loads of the last album go on numbering, so that one finishing
+	// late is not taken for the new album's.
+	attempt := f.attempt
+	*f = feed{source: timelineSource{album: al.ID}, attempt: attempt}
+	a.loadTimeline(f)
+}
+
+// closeAlbum returns to the grid of albums, keeping the album's days for
+// when it opens again.
+func (a *app) closeAlbum() {
+	a.main.albumOpen = nil
+}
+
+// selectSection shows another section, loading it the first time. Asking
+// for the albums again leaves an open album for the grid.
+func (a *app) selectSection(s section) {
+	if a.main.section == s {
+		if s == sectionAlbums && a.main.albumOpen != nil {
+			a.closeAlbum()
+		}
+		return
 	}
+	if s != sectionAlbums {
+		a.main.albumOpen = nil
+	}
+	a.main.section = s
+	f := a.main.current()
+	if f.loaded || f.loading {
+		return
+	}
+	if s == sectionAlbums {
+		a.loadAlbums(f)
+		return
+	}
+	f.source = timelineSource{favorites: s == sectionFavorites}
+	a.loadTimeline(f)
 }
 
 // refreshSection loads the section shown again.
@@ -696,7 +783,11 @@ func (a *app) refreshSection() {
 		return
 	}
 	f.err = nil
-	a.loadFeed(f, a.main.section)
+	if a.main.section == sectionAlbums && a.main.albumOpen == nil {
+		a.loadAlbums(f)
+		return
+	}
+	a.loadTimeline(f)
 }
 
 // enterMain shows the main window after a login, with the photos of the
@@ -709,49 +800,55 @@ func (a *app) enterMain() {
 			a.win.SetSize(1120, 720)
 		}
 	}
-	a.loadFeed(&a.main.photos, sectionPhotos)
+	a.loadTimeline(&a.main.photos)
 }
 
-// loadFeed loads the content of a section off the UI thread, publishing
-// what it finds through app.update. A load that finishes after another
-// started is dropped.
-func (a *app) loadFeed(f *feed, s section) {
+// loadAlbums loads the albums of the grid off the UI thread, publishing
+// them through app.update, and their covers after them.
+func (a *app) loadAlbums(f *feed) {
 	if f.loading || a.login.user == nil || a.login.user.Token == "" {
 		return
 	}
 	f.loading = true
 	f.err = nil
-	f.favorites = s == sectionFavorites
 	f.attempt++
 	attempt := f.attempt
 	base, token := a.login.serverURL, a.login.user.Token
-
-	if s == sectionAlbums {
-		go func() {
-			albums, err := fetchAlbums(base, token)
-			a.update(func() {
-				if attempt != f.attempt {
-					return
-				}
-				f.loading = false
-				if err != nil {
-					f.err = err
-					return
-				}
-				f.loaded = true
-				f.albums = albums
-			})
-			if err != nil {
+	go func() {
+		albums, err := fetchAlbums(base, token)
+		a.update(func() {
+			if attempt != f.attempt {
 				return
 			}
-			a.loadAlbumCovers(f, attempt, base, token, albums)
-		}()
+			f.loading = false
+			if err != nil {
+				f.err = err
+				return
+			}
+			f.loaded = true
+			f.albums = albums
+		})
+		if err != nil {
+			return
+		}
+		a.loadAlbumCovers(f, attempt, base, token, albums)
+	}()
+}
+
+// loadTimeline loads a timeline off the UI thread, the user's photos,
+// their favorites or an album's days, publishing what it finds through
+// app.update. A load that finishes after another started is dropped.
+func (a *app) loadTimeline(f *feed) {
+	if f.loading || a.login.user == nil || a.login.user.Token == "" {
 		return
 	}
-
-	favorites := s == sectionFavorites
+	f.loading = true
+	f.err = nil
+	f.attempt++
+	attempt := f.attempt
+	base, token, src := a.login.serverURL, a.login.user.Token, f.source
 	go func() {
-		days, err := fetchTimelineDays(base, token, favorites)
+		days, err := fetchTimelineDays(base, token, src)
 		a.update(func() {
 			if attempt != f.attempt {
 				return

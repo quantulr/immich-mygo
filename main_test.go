@@ -434,12 +434,25 @@ func timelineServer(t *testing.T) *httptest.Server {
 		switch {
 		case r.URL.Path == "/api/timeline/buckets":
 			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("albumId") == testAssetID {
+				io.WriteString(w, `[{"timeBucket":"2024-04-01","count":2}]`)
+				return
+			}
 			io.WriteString(w, `[
 				{"timeBucket":"2024-05-02","count":1},
 				{"timeBucket":"2024-05-01","count":2}
 			]`)
 		case r.URL.Path == "/api/timeline/bucket":
 			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("albumId") == testAssetID {
+				io.WriteString(w, `{
+					"id":["`+testOtherAssetID+`","`+testVideoID+`"],
+					"isImage":[true,false],
+					"ratio":[1.2,0.75],
+					"duration":[null,42000]
+				}`)
+				return
+			}
 			switch r.URL.Query().Get("timeBucket") {
 			case "2024-05-02":
 				io.WriteString(w, `{
@@ -465,7 +478,7 @@ func timelineServer(t *testing.T) *httptest.Server {
 		case r.URL.Path == "/api/albums":
 			w.Header().Set("Content-Type", "application/json")
 			io.WriteString(w, `[
-				{"albumName":"旅行","assetCount":3,"id":"`+testAssetID+`","albumThumbnailAssetId":"`+testAssetID+`"}
+				{"albumName":"旅行","assetCount":2,"id":"`+testAssetID+`","albumThumbnailAssetId":"`+testAssetID+`"}
 			]`)
 		default:
 			http.NotFound(w, r)
@@ -656,6 +669,68 @@ func TestMainSections(t *testing.T) {
 	tt.Frame()
 	if !tt.HasText("旅行") {
 		t.Errorf("texts %q in the albums section", tt.Texts())
+	}
+}
+
+func TestAlbumPage(t *testing.T) {
+	srv := timelineServer(t)
+	defer srv.Close()
+	withTestSession(t)
+
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = srv.URL
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com", Token: "token-123"}
+	a.enterMain()
+
+	tt := ui.NewTester(a.view, 1120, 720)
+	if err := tt.Click("相册"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the albums", func() bool {
+		f := &a.main.albums
+		return f.loaded && len(f.albums) == 1 && f.albums[0].Bm != nil
+	})
+	tt.Frame()
+	if err := tt.Click("旅行"); err != nil {
+		t.Fatal(err)
+	}
+	if a.main.albumOpen == nil {
+		t.Fatal("the album did not open")
+	}
+	waitFor(t, "the album's day", func() bool {
+		f := &a.main.albumFeed
+		return f.loaded && len(f.days) == 1 && f.days[0].loaded &&
+			len(f.days[0].photos) == 2 && f.days[0].photos[0].Bm != nil
+	})
+	tt.Frame()
+	for _, want := range []string{"旅行", "返回相册", "4月1日", "2 项"} {
+		if !tt.HasText(want) {
+			t.Errorf("texts %q in the album do not show %q", tt.Texts(), want)
+		}
+	}
+
+	if err := tt.Click("返回相册"); err != nil {
+		t.Fatal(err)
+	}
+	if a.main.albumOpen != nil {
+		t.Error("still in the album after going back")
+	}
+	tt.Frame()
+	if !tt.HasText("旅行") || !tt.HasText("2 项") {
+		t.Errorf("texts %q back in the grid", tt.Texts())
+	}
+
+	// The same album opens again, its days kept.
+	if err := tt.Click("旅行"); err != nil {
+		t.Fatal(err)
+	}
+	if a.main.albumOpen == nil {
+		t.Fatal("the album did not open again")
+	}
+	tt.Frame()
+	if !tt.HasText("4月1日") {
+		t.Errorf("texts %q after opening the album again", tt.Texts())
 	}
 }
 

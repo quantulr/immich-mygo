@@ -46,10 +46,18 @@ type album struct {
 	Bm    *ui.Bitmap
 }
 
-// fetchTimelineDays returns the days of the user's timeline, newest first,
-// or of their favorites, with how many assets each holds. The assets of a
-// day load as the timeline shows it.
-func fetchTimelineDays(base, token string, favorites bool) ([]*timelineDay, error) {
+// timelineSource is whose assets a timeline shows: the user's, their
+// favorites, or an album's.
+type timelineSource struct {
+	favorites bool
+	// album is the ID of the album whose assets the timeline shows, or "".
+	album string
+}
+
+// fetchTimelineDays returns the days of a timeline, newest first, with how
+// many assets each holds. The assets of a day load as the timeline shows
+// it.
+func fetchTimelineDays(base, token string, src timelineSource) ([]*timelineDay, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -57,11 +65,16 @@ func fetchTimelineDays(base, token string, favorites bool) ([]*timelineDay, erro
 	if err != nil {
 		return nil, err
 	}
-	order, visibility := immichapi.AssetOrderDesc, immichapi.Timeline
-	params := &immichapi.GetTimeBucketsParams{Order: &order, Visibility: &visibility}
-	if favorites {
-		yes := true
-		params.IsFavorite = &yes
+	order := immichapi.AssetOrderDesc
+	albumID, favorite, visibility, err := sourceParams(src)
+	if err != nil {
+		return nil, err
+	}
+	params := &immichapi.GetTimeBucketsParams{
+		Order:      &order,
+		AlbumId:    albumID,
+		IsFavorite: favorite,
+		Visibility: visibility,
 	}
 	resp, err := client.GetTimeBucketsWithResponse(ctx, params)
 	if err != nil {
@@ -84,9 +97,30 @@ func fetchTimelineDays(base, token string, favorites bool) ([]*timelineDay, erro
 	return days, nil
 }
 
-// fetchDayAssets returns the assets of one day of the timeline, newest
+// sourceParams is what a timeline's queries ask for: an album's assets, or
+// those of the whole timeline, or its favorites. An album shows its assets
+// whatever their visibility.
+func sourceParams(src timelineSource) (albumID *uuid.UUID, favorite *bool, visibility *immichapi.AssetVisibility, err error) {
+	if src.album != "" {
+		id, err := uuid.Parse(src.album)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		albumID = &id
+	} else {
+		visible := immichapi.Timeline
+		visibility = &visible
+	}
+	if src.favorites {
+		yes := true
+		favorite = &yes
+	}
+	return albumID, favorite, visibility, nil
+}
+
+// fetchDayAssets returns the assets of one day of a timeline, newest
 // first.
-func fetchDayAssets(base, token, bucket string, favorites bool) ([]*photo, error) {
+func fetchDayAssets(base, token, bucket string, src timelineSource) ([]*photo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -94,16 +128,22 @@ func fetchDayAssets(base, token, bucket string, favorites bool) ([]*photo, error
 	if err != nil {
 		return nil, err
 	}
-	order, visibility := immichapi.AssetOrderDesc, immichapi.Timeline
-	return fetchBucket(ctx, client, bucket, order, visibility, favorites)
+	return fetchBucket(ctx, client, bucket, src)
 }
 
-// fetchBucket returns the assets of one bucket of the timeline.
-func fetchBucket(ctx context.Context, client *immichapi.ClientWithResponses, bucket string, order immichapi.AssetOrder, visibility immichapi.AssetVisibility, favorites bool) ([]*photo, error) {
-	params := &immichapi.GetTimeBucketParams{TimeBucket: bucket, Order: &order, Visibility: &visibility}
-	if favorites {
-		yes := true
-		params.IsFavorite = &yes
+// fetchBucket returns the assets of one bucket of a timeline.
+func fetchBucket(ctx context.Context, client *immichapi.ClientWithResponses, bucket string, src timelineSource) ([]*photo, error) {
+	order := immichapi.AssetOrderDesc
+	albumID, favorite, visibility, err := sourceParams(src)
+	if err != nil {
+		return nil, err
+	}
+	params := &immichapi.GetTimeBucketParams{
+		TimeBucket: bucket,
+		Order:      &order,
+		AlbumId:    albumID,
+		IsFavorite: favorite,
+		Visibility: visibility,
 	}
 	resp, err := client.GetTimeBucketWithResponse(ctx, params)
 	if err != nil {
