@@ -417,6 +417,7 @@ func (a *app) signOut() {
 	}
 	a.main = mainState{}
 	a.thumbs.clear()
+	a.closeVideoServer()
 	if a.win != nil {
 		a.win.SetMinimumSize(460, 480)
 		a.win.SetSize(480, 520)

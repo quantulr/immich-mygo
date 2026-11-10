@@ -125,6 +125,9 @@ var (
 	plusIcon      = svgIcon(`<path d="M8 4v8"/><path d="M4 8h8"/>`)
 	infoIcon      = svgIcon(`<circle cx="8" cy="8" r="5.6"/><path d="M8 7.2v3.4"/><path d="M8 4.9v.1"/>`)
 	playIcon      = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M5 3.4l7 4.6-7 4.6z" fill="currentColor"/></svg>`))
+	pauseIcon     = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M4.6 3.2h2.2v9.6H4.6zM9.2 3.2h2.2v9.6H9.2z" fill="currentColor"/></svg>`))
+	soundIcon     = svgIcon(`<path d="M3 6.1h2.3L8.6 3.4v9.2L5.3 9.9H3z"/><path d="M10.8 6.3a2.4 2.4 0 0 1 0 3.4"/><path d="M12.4 4.9a4.7 4.7 0 0 1 0 6.2"/>`)
+	mutedIcon     = svgIcon(`<path d="M3 6.1h2.3L8.6 3.4v9.2L5.3 9.9H3z"/><path d="M11 6.4l3 3.2"/><path d="M14 6.4l-3 3.2"/>`)
 
 	minimizeIcon = svgIcon(`<path d="M3.5 8h9"/>`)
 	maximizeIcon = svgIcon(`<rect x="3.5" y="3.5" width="9" height="9" rx="1.5"/>`)
@@ -841,6 +844,7 @@ func (a *app) refreshSection() {
 // enterMain shows the main window after a login, with the photos of the
 // server, growing the window from the login card's size.
 func (a *app) enterMain() {
+	a.stopVideo()
 	a.main = mainState{}
 	a.thumbs.clear()
 	if a.win != nil {

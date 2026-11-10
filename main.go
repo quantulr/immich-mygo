@@ -41,6 +41,9 @@ type app struct {
 	main  mainState
 	// thumbs keeps the timeline's thumbnails within a memory budget.
 	thumbs thumbCache
+	// video plays the video the image page shows, and serves it to the
+	// system's player.
+	video videoState
 }
 
 func (a *app) view(c *ui.Context) {

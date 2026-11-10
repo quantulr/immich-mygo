@@ -89,6 +89,13 @@ func (a *app) showViewerPhoto(f *feed, dayKey, id string) {
 	v.bm = nil
 	v.err = nil
 	v.zoom, v.panX, v.panY = 1, 0, 0
+	// A video plays in the system's player, which reads it through the
+	// loopback server; another asset closes it.
+	if p := v.photo(); p != nil && p.Video {
+		a.playVideo(id)
+	} else {
+		a.stopVideo()
+	}
 	if changed {
 		// Another asset: its details are not this one's.
 		v.details = nil
@@ -127,6 +134,7 @@ func (a *app) reloadViewerPhoto() {
 
 // closeViewer puts the timeline back.
 func (a *app) closeViewer() {
+	a.stopVideo()
 	a.main.viewer = nil
 }
 
@@ -264,6 +272,8 @@ func (v *viewer) photo() *photo {
 // and a pinch zoom about the pointer, a double click toggles between fit
 // and twice it, and dragging a zoomed photo pans it.
 func (a *app) photoPage(c *ui.Context, v *viewer) {
+	p := v.photo()
+	isVideo := p != nil && p.Video
 	stage := ui.Box(c).Fill().Background(ui.Hex("#0e0f13")).Clip().
 		Focusable().FocusRing(false)
 	if v.focusStage {
@@ -291,7 +301,9 @@ func (a *app) photoPage(c *ui.Context, v *viewer) {
 	}
 	stage.HandleInput(func(ev ui.InputEvent) bool {
 		v := a.main.viewer
-		if v == nil || v.bm == nil || ev.X >= bounds.W-panel {
+		// A video is the player's, which sizes it to the stage: the wheel and
+		// a pinch leave it at fit.
+		if v == nil || v.bm == nil || isVideo || ev.X >= bounds.W-panel {
 			return false
 		}
 		switch ev.Kind {
@@ -312,12 +324,18 @@ func (a *app) photoPage(c *ui.Context, v *viewer) {
 	})
 	// A drag over the photo moves the zoomed one under the pointer.
 	dx, dy, dragging := stage.Dragged()
-	if dragging && v.zoomFactor() > 1 && !overPanel() {
+	if !isVideo && dragging && v.zoomFactor() > 1 && !overPanel() {
 		v.panX += dx
 		v.panY += dy
 	}
 	stage.Children(func() {
 		switch {
+		case isVideo && a.video.err != nil:
+			ui.Box(c).Fill().Padding(0, panel, 0, 0).Children(func() {
+				a.viewerVideoError(c, a.video.err)
+			})
+		case isVideo && a.video.player != nil:
+			a.viewerVideo(c, v, photoStage, panel)
 		case v.err != nil:
 			// The load states center in the photo's room, not the panel's.
 			ui.Box(c).Fill().Padding(0, panel, 0, 0).Children(func() {
@@ -334,10 +352,9 @@ func (a *app) photoPage(c *ui.Context, v *viewer) {
 					ui.Image(c, v.bm).Fill().Fit(ui.Contain)
 				})
 			}
-			if p := v.photo(); p != nil && p.Video {
+			if isVideo {
 				a.viewerVideoMark(c, p.Duration)
-			}
-			if lay.maxX > 0 || lay.maxY > 0 {
+			} else if lay.maxX > 0 || lay.maxY > 0 {
 				if dragging {
 					stage.Cursor(ui.CursorGrabbing)
 				} else {
@@ -357,7 +374,7 @@ func (a *app) photoPage(c *ui.Context, v *viewer) {
 		ui.Column(c).Absolute().Right(panel).Top(0).Bottom(0).Width(72).Center().Children(func() {
 			a.viewerArrow(c, 1, forwardIcon)
 		})
-		if v.bm != nil {
+		if v.bm != nil && !isVideo {
 			a.viewerZoomBar(c, v, photoStage, 16+panel)
 		}
 		if v.showDetails {
@@ -366,7 +383,7 @@ func (a *app) photoPage(c *ui.Context, v *viewer) {
 	})
 	// A double click on the photo zooms to twice the fit, and back to it.
 	// The buttons keep theirs, which step the zoom instead.
-	if stage.DoubleClicked() {
+	if !isVideo && stage.DoubleClicked() {
 		if px, py, ok := stage.PointerPosition(); ok {
 			if v.zoomFactor() > 1 {
 				a.resetViewerZoom()
@@ -381,17 +398,135 @@ func (a *app) photoPage(c *ui.Context, v *viewer) {
 	if stage.Shortcut(0, ui.KeyRight) {
 		a.viewerMove(1)
 	}
-	if stage.Shortcut(0, ui.KeyEqual) || stage.Shortcut(ui.Shift, ui.KeyEqual) {
-		a.zoomViewer(v.zoomFactor()*zoomStep, photoStage.W/2, photoStage.H/2, photoStage)
+	if !isVideo {
+		if stage.Shortcut(0, ui.KeyEqual) || stage.Shortcut(ui.Shift, ui.KeyEqual) {
+			a.zoomViewer(v.zoomFactor()*zoomStep, photoStage.W/2, photoStage.H/2, photoStage)
+		}
+		if stage.Shortcut(0, ui.KeyMinus) {
+			a.zoomViewer(v.zoomFactor()/zoomStep, photoStage.W/2, photoStage.H/2, photoStage)
+		}
+		if stage.Shortcut(0, ui.Key0) {
+			a.resetViewerZoom()
+		}
 	}
-	if stage.Shortcut(0, ui.KeyMinus) {
-		a.zoomViewer(v.zoomFactor()/zoomStep, photoStage.W/2, photoStage.H/2, photoStage)
-	}
-	if stage.Shortcut(0, ui.Key0) {
-		a.resetViewerZoom()
+	if isVideo && stage.Shortcut(0, ui.KeySpace) {
+		a.toggleVideoPlayback()
 	}
 	if stage.Shortcut(0, ui.KeyEscape) {
 		a.closeViewer()
+	}
+}
+
+// toggleVideoPlayback plays or pauses the video shown, as its button does.
+func (a *app) toggleVideoPlayback() {
+	p := a.video.player
+	if p == nil {
+		return
+	}
+	if p.Playing() {
+		p.Pause()
+	} else {
+		p.Play()
+	}
+}
+
+// viewerVideo shows the video of the asset on the stage: the system's
+// player in the photo's room, the still until its first picture comes, and
+// the controls at the bottom once it plays.
+func (a *app) viewerVideo(c *ui.Context, v *viewer, stage ui.Rect, panel float32) {
+	p := a.video.player
+	ui.Box(c).Fill().Padding(0, panel, 0, 0).Children(func() {
+		ui.Box(c).Fill().Padding(viewerPad).Children(func() {
+			ui.Video(c, p).Fill().Fit(ui.Contain).Label("视频")
+			switch {
+			case p.Err() != nil:
+				a.viewerVideoError(c, p.Err())
+			case !p.Ready():
+				// The still stands in for the picture until the first comes.
+				if v.bm != nil {
+					ui.Image(c, v.bm).Absolute().Left(0).Top(0).Right(0).Bottom(0).
+						Fit(ui.Contain)
+				}
+				a.viewerVideoWaiting(c)
+			case p.Buffering():
+				a.viewerVideoWaiting(c)
+			}
+		})
+	})
+	if p.Err() == nil && p.Ready() {
+		a.viewerVideoControls(c, p, stage)
+	}
+}
+
+// viewerVideoWaiting says that the video is on its way, over its still.
+func (a *app) viewerVideoWaiting(c *ui.Context) {
+	ui.Column(c).Absolute().Left(0).Top(0).Right(0).Bottom(0).Center().Gap(10).Children(func() {
+		ui.Spinner(c).Label("正在加载视频").TextColor(ui.RGBA(255, 255, 255, 0.6))
+		ui.Text(c, "正在加载视频…").FontSize(12).TextColor(ui.RGBA(255, 255, 255, 0.6))
+	})
+}
+
+// viewerVideoError tells why the video did not play, and offers to try
+// again.
+func (a *app) viewerVideoError(c *ui.Context, err error) {
+	ui.Column(c).Absolute().Left(0).Top(0).Right(0).Bottom(0).Center().Gap(8).Padding(24).
+		Children(func() {
+			ui.Box(c).Size(48, 48).Radius(12).Background(ui.RGBA(255, 255, 255, 0.08)).Center().
+				Children(func() {
+					ui.Icon(c, playIcon).Size(22, 22).TextColor(ui.RGBA(255, 255, 255, 0.55))
+				})
+			ui.Text(c, "无法播放视频").FontSize(17).FontWeight(600).TextColor(ui.Hex("#ffffff"))
+			ui.Text(c, err.Error()).FontSize(12.5).TextColor(ui.RGBA(255, 255, 255, 0.55)).
+				MaxWidth(420).TextAlign(ui.Center)
+			ui.Box(c).Height(4)
+			ui.PrimaryButton(c, "重试").OnClick(a.retryVideo)
+		})
+}
+
+// viewerVideoControls is the video's bar at the stage's bottom: play or
+// pause, where it plays and how long it runs, a seek slider, and mute.
+func (a *app) viewerVideoControls(c *ui.Context, p *ui.VideoPlayer, stage ui.Rect) {
+	pos, dur := p.Position(), p.Duration()
+	w := min(max(stage.W-2*72, 260), 560)
+	w = min(w, stage.W)
+	ui.Row(c).Absolute().Left((stage.W-w)/2).Bottom(16).Width(w).Height(36).
+		Padding(0, 8).Gap(10).Radius(18).Background(ui.RGBA(0, 0, 0, 0.55)).
+		AlignItems(ui.Center).Children(func() {
+		icon, label := pauseIcon, "暂停"
+		if !p.Playing() {
+			icon, label = playIcon, "播放"
+		}
+		a.viewerVideoButton(c, icon, label, a.toggleVideoPlayback)
+		if w >= 300 {
+			ui.Text(c, durationLabel(int(pos/time.Millisecond))+" / "+
+				durationLabel(int(dur/time.Millisecond))).FontSize(11.5).
+				TextColor(ui.RGBA(255, 255, 255, 0.8)).FontFeatures("tnum")
+		}
+		sec := pos.Seconds()
+		if ui.Slider(c.Key("video-seek"), &sec, 0, max(dur.Seconds(), 0.001)).
+			Grow(1).MinWidth(0).Label("播放位置").Changed() {
+			p.Seek(time.Duration(sec * float64(time.Second)))
+		}
+		icon, label = soundIcon, "静音"
+		if p.Muted() {
+			icon, label = mutedIcon, "取消静音"
+		}
+		a.viewerVideoButton(c, icon, label, a.toggleVideoMuted)
+	})
+}
+
+// viewerVideoButton is one of the video's round buttons.
+func (a *app) viewerVideoButton(c *ui.Context, icon *ui.SVG, label string, fn func()) {
+	b := ui.ButtonBase(c).Size(24, 24).Radius(6).Center().Label(label).Tooltip(label).
+		KeepFocus()
+	if b.Pressed() {
+		b.Background(ui.RGBA(255, 255, 255, 0.22))
+	} else if b.Hovered() {
+		b.Background(ui.RGBA(255, 255, 255, 0.14))
+	}
+	b.Children(func() { ui.Icon(c, icon).Size(14, 14).TextColor(ui.RGBA(255, 255, 255, 0.92)) })
+	if b.Clicked() {
+		fn()
 	}
 }
 
