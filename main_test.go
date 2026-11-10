@@ -1222,6 +1222,8 @@ func TestLivePhotoBadge(t *testing.T) {
 	tt.Frame()
 	if p := a.main.photos.days[0].photos[0]; !p.Live || p.Video {
 		t.Errorf("photo %+v, want a live photo", p)
+	} else if p.LiveVideo != testVideoID {
+		t.Errorf("live photo video %q, want %q", p.LiveVideo, testVideoID)
 	}
 	if _, ok := tt.Find("实况照片"); !ok {
 		t.Errorf("texts %q on the tile do not mark it live", tt.Texts())
@@ -1237,6 +1239,33 @@ func TestLivePhotoBadge(t *testing.T) {
 	tt.Frame()
 	if !tt.HasText("实况照片") {
 		t.Errorf("texts %q on the image page do not mark it live", tt.Texts())
+	}
+
+	// Holding the still plays its motion; letting go stops it.
+	tt.Press(600, 400)
+	tt.Frame()
+	tt.Advance(150 * time.Millisecond)
+	tt.Frame()
+	if a.main.viewer.liveOn {
+		t.Error("the motion played before the press was held")
+	}
+	tt.Advance(200 * time.Millisecond)
+	tt.Frame()
+	if !a.main.viewer.liveOn {
+		t.Error("holding the still did not play its motion")
+	}
+	tt.Release(600, 400)
+	tt.Frame()
+	if a.main.viewer.liveOn {
+		t.Error("the motion kept playing after the press ended")
+	}
+
+	// A quick press is no hold.
+	tt.Press(600, 400)
+	tt.Release(600, 400)
+	tt.Frame()
+	if a.main.viewer.liveOn {
+		t.Error("a quick press played the motion")
 	}
 }
 

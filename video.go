@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/video"
@@ -239,6 +240,12 @@ func (a *app) stopVideo() {
 	a.video.player = nil
 	a.video.id = ""
 	a.video.err = nil
+	// The still shows again, and a press waiting to play its motion starts
+	// over.
+	if v := a.main.viewer; v != nil {
+		v.liveOn = false
+		v.liveAt = time.Time{}
+	}
 }
 
 // closeVideoServer stops the player and the server, as signing out does: the

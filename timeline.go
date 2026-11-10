@@ -33,8 +33,9 @@ type photo struct {
 	ID    string
 	Video bool
 	// Live tells a live photo: a still with a video of its own, which the
-	// timeline marks as one.
-	Live bool
+	// timeline marks as one; LiveVideo is the ID of that video.
+	Live      bool
+	LiveVideo string
 	// Duration is how long a video runs, in milliseconds.
 	Duration int
 	Bm       *ui.Bitmap
@@ -205,6 +206,7 @@ func fetchBucket(ctx context.Context, client *immichapi.ClientWithResponses, buc
 		if i < len(d.LivePhotoVideoId) && d.LivePhotoVideoId[i] != nil &&
 			*d.LivePhotoVideoId[i] != "" {
 			p.Live = true
+			p.LiveVideo = *d.LivePhotoVideoId[i]
 		}
 		photos = append(photos, p)
 	}

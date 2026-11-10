@@ -19,6 +19,11 @@ const (
 	zoomStep      = 1.25
 	// detailsW is the width of the details panel, in DIPs.
 	detailsW = 300
+	// livePressDelay is how long a press on a live photo's still lasts
+	// before its motion plays, and livePressSlop how far it may wander
+	// before the press is a drag.
+	livePressDelay = 300 * time.Millisecond
+	livePressSlop  = 8
 )
 
 // viewer is the image page: one asset of a timeline shown large, which the
@@ -51,6 +56,13 @@ type viewer struct {
 	details        *assetDetails
 	detailsErr     error
 	detailsAttempt int
+	// liveAt is when the press that shows a live photo's motion began,
+	// zero while none does, where it began, and liveOn tells that the
+	// motion plays.
+	liveAt time.Time
+	liveX  float32
+	liveY  float32
+	liveOn bool
 }
 
 // zoomFactor is how much larger than fit the photo shows, 1 before the page
@@ -299,11 +311,14 @@ func (a *app) photoPage(c *ui.Context, v *viewer) {
 		px, _, ok := stage.PointerPosition()
 		return ok && px >= bounds.W-panel
 	}
+	// livePlaying tells that a live photo's motion shows, as its still is
+	// held.
+	livePlaying := !isVideo && v.liveOn && v.bm != nil && a.video.player != nil
 	stage.HandleInput(func(ev ui.InputEvent) bool {
 		v := a.main.viewer
 		// A video is the player's, which sizes it to the stage: the wheel and
-		// a pinch leave it at fit.
-		if v == nil || v.bm == nil || isVideo || ev.X >= bounds.W-panel {
+		// a pinch leave it at fit, as they leave a live photo's motion.
+		if v == nil || v.bm == nil || isVideo || livePlaying || ev.X >= bounds.W-panel {
 			return false
 		}
 		switch ev.Kind {
@@ -343,10 +358,13 @@ func (a *app) photoPage(c *ui.Context, v *viewer) {
 			})
 		case v.bm != nil:
 			lay := v.layout(photoStage, v.bm)
-			if lay.w > 0 {
+			switch {
+			case livePlaying:
+				a.viewerLiveVideo(c, v, lay)
+			case lay.w > 0:
 				ui.Image(c, v.bm).Absolute().Left(lay.x).Top(lay.y).
 					Width(lay.w).Height(lay.h).Fit(ui.Cover)
-			} else {
+			default:
 				// The first frame, before the stage's box is known.
 				ui.Box(c).Fill().Padding(viewerPad).Children(func() {
 					ui.Image(c, v.bm).Fill().Fit(ui.Contain)
@@ -355,10 +373,10 @@ func (a *app) photoPage(c *ui.Context, v *viewer) {
 			if isVideo {
 				a.viewerVideoMark(c, p.Duration)
 			} else {
-				if p.Live {
+				if p.Live && !livePlaying {
 					a.viewerLiveMark(c)
 				}
-				if lay.maxX > 0 || lay.maxY > 0 {
+				if !livePlaying && (lay.maxX > 0 || lay.maxY > 0) {
 					if dragging {
 						stage.Cursor(ui.CursorGrabbing)
 					} else {
@@ -379,13 +397,17 @@ func (a *app) photoPage(c *ui.Context, v *viewer) {
 		ui.Column(c).Absolute().Right(panel).Top(0).Bottom(0).Width(72).Center().Children(func() {
 			a.viewerArrow(c, 1, forwardIcon)
 		})
-		if v.bm != nil && !isVideo {
+		if v.bm != nil && !isVideo && !livePlaying {
 			a.viewerZoomBar(c, v, photoStage, 16+panel)
 		}
 		if v.showDetails {
 			a.viewerDetails(c, v)
 		}
 	})
+	// A press held on a live photo's still plays its motion, as iOS does.
+	if !isVideo && p != nil && p.LiveVideo != "" && v.bm != nil {
+		a.holdLivePhoto(c, v, p, stage, photoStage)
+	}
 	// A double click on the photo zooms to twice the fit, and back to it.
 	// The buttons keep theirs, which step the zoom instead.
 	if !isVideo && stage.DoubleClicked() {
@@ -914,6 +936,83 @@ func (a *app) viewerVideoMark(c *ui.Context, ms int) {
 		Background(ui.RGBA(0, 0, 0, 0.55)).AlignItems(ui.Center).Children(func() {
 		ui.Icon(c, playIcon).Size(10, 10).TextColor(ui.Hex("#ffffff"))
 		ui.Text(c, text).FontSize(11.5).TextColor(ui.Hex("#ffffff"))
+	})
+}
+
+// holdLivePhoto plays a live photo's motion while its still is held for
+// livePressDelay, and stops it as the press ends. A press that wanders is a
+// drag, which pans the zoomed still instead.
+func (a *app) holdLivePhoto(c *ui.Context, v *viewer, p *photo, stage ui.Element, photoStage ui.Rect) {
+	if v.liveOn {
+		if !stage.Pressed() {
+			a.stopVideo()
+			c.After(0)
+		}
+		return
+	}
+	if !stage.Pressed() {
+		v.liveAt = time.Time{}
+		return
+	}
+	px, py, ok := stage.PointerPosition()
+	if !ok {
+		v.liveAt = time.Time{}
+		return
+	}
+	lay := v.layout(photoStage, v.bm)
+	if lay.w <= 0 || px < lay.x || px >= lay.x+lay.w ||
+		py < lay.y || py >= lay.y+lay.h {
+		// The still is not under the pointer.
+		v.liveAt = time.Time{}
+		return
+	}
+	if v.liveAt.IsZero() {
+		v.liveAt = c.Now()
+		v.liveX, v.liveY = px, py
+		c.After(livePressDelay)
+		return
+	}
+	if dx, dy := px-v.liveX, py-v.liveY; dx > livePressSlop || dx < -livePressSlop ||
+		dy > livePressSlop || dy < -livePressSlop {
+		v.liveAt = time.Time{}
+		return
+	}
+	if c.Now().Sub(v.liveAt) >= livePressDelay {
+		v.liveAt = time.Time{}
+		a.playLivePhoto(p.LiveVideo)
+		c.After(0)
+	}
+}
+
+// playLivePhoto plays the video of a live photo, as holding its still does:
+// the page's player, without the video's controls.
+func (a *app) playLivePhoto(id string) {
+	a.stopVideo()
+	a.playVideo(id)
+	if v := a.main.viewer; v != nil {
+		v.liveOn = true
+	}
+}
+
+// viewerLiveVideo shows a live photo's motion in its still's room, the still
+// standing in until the motion's first picture comes.
+func (a *app) viewerLiveVideo(c *ui.Context, v *viewer, lay viewerLayout) {
+	p := a.video.player
+	if lay.w > 0 {
+		ui.Video(c, p).Absolute().Left(lay.x).Top(lay.y).
+			Width(lay.w).Height(lay.h).Fit(ui.Contain)
+		if !p.Ready() {
+			ui.Image(c, v.bm).Absolute().Left(lay.x).Top(lay.y).
+				Width(lay.w).Height(lay.h).Fit(ui.Contain)
+		}
+		return
+	}
+	// The first frame, before the stage's box is known.
+	ui.Box(c).Fill().Padding(viewerPad).Children(func() {
+		ui.Video(c, p).Fill().Fit(ui.Contain)
+		if !p.Ready() {
+			ui.Image(c, v.bm).Fill().Fit(ui.Contain)
+		}
 	})
 }
 
