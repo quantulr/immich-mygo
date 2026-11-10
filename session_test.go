@@ -204,6 +204,11 @@ func TestPrepareSession(t *testing.T) {
 
 func TestRestoreSession(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/timeline/buckets" {
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[]`)
+			return
+		}
 		if r.URL.Path != "/api/users/me" ||
 			r.Header.Get("Authorization") != "Bearer token-123" {
 			w.WriteHeader(http.StatusUnauthorized)

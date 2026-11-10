@@ -9,6 +9,7 @@ tool (
 
 require (
 	github.com/egoist/mygo v0.8.3
+	github.com/google/uuid v1.6.0
 	github.com/oapi-codegen/runtime v1.8.0
 )
 
@@ -20,7 +21,6 @@ require (
 	github.com/go-openapi/jsonpointer v0.23.1 // indirect
 	github.com/go-openapi/swag/jsonname v0.26.0 // indirect
 	github.com/go-text/typesetting v0.3.5 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/oapi-codegen/oapi-codegen/v2 v2.8.2 // indirect
 	github.com/oasdiff/yaml v0.1.1 // indirect
 	github.com/oasdiff/yaml3 v0.0.14 // indirect

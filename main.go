@@ -13,9 +13,14 @@ import (
 type app struct {
 	win   *mygo.Window
 	login loginState
+	main  mainState
 }
 
 func (a *app) view(c *ui.Context) {
+	if a.login.stage == stageSignedIn {
+		a.mainView(c)
+		return
+	}
 	a.login.view(c, a)
 }
 
@@ -35,17 +40,24 @@ func main() {
 	a := &app{}
 	mygo.App.WhenReady(func() {
 		a.prepareSession()
-		a.win = mygo.NewWindow(mygo.WindowOptions{
+		// A saved session opens the window at the main view's size; the
+		// login card stays small.
+		opts := mygo.WindowOptions{
 			Title:     "Immich",
 			Width:     480,
 			Height:    520,
 			MinWidth:  460,
 			MinHeight: 480,
 			// Opens where the user left it last time.
-			StateKey: "login",
+			StateKey: "main",
 			// The window shows the interface MyGo draws, not a web page.
 			Content: ui.View(a.view),
-		})
+		}
+		if a.login.stage == stageRestoring {
+			opts.Width, opts.Height = 1120, 720
+			opts.MinWidth, opts.MinHeight = 720, 520
+		}
+		a.win = mygo.NewWindow(opts)
 		if a.login.stage == stageRestoring {
 			go a.restoreSession()
 		}

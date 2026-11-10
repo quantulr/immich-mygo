@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -115,13 +119,14 @@ func TestCancelRestore(t *testing.T) {
 }
 
 func TestSignOutReturnsToCredentials(t *testing.T) {
+	withTestSession(t)
 	a := &app{}
 	a.login.stage = stageSignedIn
 	a.login.serverURL = "https://photos.example.com"
 	a.login.version = "2.1.0"
 	a.login.user = &account{Name: "Ada", Email: "ada@example.com"}
-	tt := ui.NewTester(a.view, 480, 560)
-	if !tt.HasText("欢迎，Ada") {
+	tt := ui.NewTester(a.view, 1120, 720)
+	if !tt.HasText("照片") {
 		t.Errorf("texts %q while signed in", tt.Texts())
 	}
 	if err := tt.Click("退出登录"); err != nil {
@@ -332,5 +337,171 @@ func TestFetchAccount(t *testing.T) {
 
 	if _, err := fetchAccount(srv.URL, "wrong"); !errors.Is(err, errSessionExpired) {
 		t.Errorf("refused token: %v", err)
+	}
+}
+
+// waitFor waits until ok holds, as a load off the UI thread finishes.
+func waitFor(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// testPNG is a thumbnail for a fake server.
+func testPNG(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewNRGBA(image.Rect(0, 0, 4, 4))); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+const testAssetID = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+
+// timelineServer serves a timeline of two assets with their thumbnails,
+// and one album.
+func timelineServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	thumb := testPNG(t)
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/timeline/buckets":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[{"timeBucket":"2026-11-01","count":2}]`)
+		case r.URL.Path == "/api/timeline/bucket":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{
+				"id":["`+testAssetID+`","00000000-0000-0000-0000-000000000002"],
+				"isImage":[true,false],
+				"ratio":[1.5,0.75]
+			}`)
+		case r.URL.Path == "/api/assets/"+testAssetID+"/thumbnail",
+			r.URL.Path == "/api/assets/00000000-0000-0000-0000-000000000002/thumbnail":
+			w.Header().Set("Content-Type", "image/png")
+			w.Write(thumb)
+		case r.URL.Path == "/api/albums":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[
+				{"albumName":"旅行","assetCount":3,"id":"`+testAssetID+`","albumThumbnailAssetId":"`+testAssetID+`"}
+			]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func TestMainTimeline(t *testing.T) {
+	srv := timelineServer(t)
+	defer srv.Close()
+	withTestSession(t)
+
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = srv.URL
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com", Token: "token-123"}
+	a.enterMain()
+
+	waitFor(t, "the timeline", func() bool {
+		f := &a.main.photos
+		return f.loaded && len(f.assets) == 2 &&
+			f.assets[0].Bm != nil && f.assets[1].Bm != nil
+	})
+
+	tt := ui.NewTester(a.view, 1120, 720)
+	if !tt.HasText("照片") || !tt.HasText("Ada") {
+		t.Errorf("texts %q in the main view", tt.Texts())
+	}
+}
+
+func TestMainSections(t *testing.T) {
+	srv := timelineServer(t)
+	defer srv.Close()
+	withTestSession(t)
+
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = srv.URL
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com", Token: "token-123"}
+	a.enterMain()
+
+	tt := ui.NewTester(a.view, 1120, 720)
+	if err := tt.Click("相册"); err != nil {
+		t.Fatal(err)
+	}
+	if a.main.section != sectionAlbums {
+		t.Fatalf("section %d after choosing albums", a.main.section)
+	}
+	waitFor(t, "the albums", func() bool {
+		f := &a.main.albums
+		return f.loaded && len(f.albums) == 1 && f.albums[0].Bm != nil
+	})
+	tt.Frame()
+	if !tt.HasText("旅行") {
+		t.Errorf("texts %q in the albums section", tt.Texts())
+	}
+}
+
+func TestLoginFlowReachesMain(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/server/ping":
+			io.WriteString(w, `{"res":"pong"}`)
+		case "/api/server/version":
+			io.WriteString(w, `{"major":2,"minor":1,"patch":0}`)
+		case "/api/auth/login":
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{
+				"accessToken":"token-123",
+				"userId":"`+testAssetID+`",
+				"userEmail":"ada@example.com",
+				"name":"Ada"
+			}`)
+		case "/api/timeline/buckets":
+			io.WriteString(w, `[]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	secrets, _ := withTestSession(t)
+
+	a := &app{}
+	tt := ui.NewTester(a.view, 480, 520)
+	tt.Type(srv.URL)
+	tt.Key(0, ui.KeyEnter)
+	waitFor(t, "the server check", func() bool {
+		return a.login.stage == stageCredentials && !a.login.checking
+	})
+
+	tt.Frame()
+	if err := tt.Click("邮箱"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Type("ada@example.com")
+	if err := tt.Click("密码"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Type("secret")
+	if err := tt.Click("登录"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the main view", func() bool {
+		return a.login.stage == stageSignedIn && a.main.photos.loaded
+	})
+
+	tt.Frame()
+	if !tt.HasText("照片") || !tt.HasText("Ada") {
+		t.Errorf("texts %q after a login", tt.Texts())
+	}
+	if string(secrets[accessTokenKey]) != "token-123" {
+		t.Errorf("saved token %q after a login", secrets[accessTokenKey])
 	}
 }

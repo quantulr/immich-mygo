@@ -67,8 +67,6 @@ func (l *loginState) view(c *ui.Context, a *app) {
 				a.restoring(c)
 			case stageCredentials:
 				a.credentials(c)
-			case stageSignedIn:
-				a.signedIn(c)
 			default:
 				a.serverForm(c)
 			}
@@ -186,38 +184,6 @@ func (a *app) credentials(c *ui.Context) {
 	})
 }
 
-// signedIn is the step after a successful login. The app's screens come
-// here next; for now it shows who signed in.
-func (a *app) signedIn(c *ui.Context) {
-	l := &a.login
-	t := c.Theme()
-	name, email := "你", ""
-	if l.user != nil {
-		if l.user.Name != "" {
-			name = l.user.Name
-		}
-		email = l.user.Email
-	}
-	ui.Column(c).Gap(6).Children(func() {
-		ui.Text(c, "欢迎，"+name).FontSize(20).Bold()
-		if email != "" {
-			ui.Text(c, email).FontSize(12).TextColor(t.TextMuted)
-		}
-	})
-	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Box(c).Size(8, 8).Radius(4).Background(t.Success)
-		status := "已登录"
-		if l.version != "" {
-			status += " · Immich " + l.version
-		}
-		ui.Text(c, status).FontSize(12).TextColor(t.Success)
-	})
-	if l.storageErr != "" {
-		ui.Text(c, l.storageErr).FontSize(12).TextColor(t.Warning)
-	}
-	ui.Button(c, "退出登录").OnClick(a.signOut)
-}
-
 // prepareSession loads what the login flow needs from the last run,
 // before the window shows. It reads the file only: the token, which may
 // make the system ask the user something, comes from the credential
@@ -279,6 +245,7 @@ func (a *app) restoreSession() {
 			l.loginErr = ""
 			l.storageErr = ""
 			l.stage = stageSignedIn
+			a.enterMain()
 		case errors.Is(err, errSessionExpired):
 			if err := sessions.clearToken(); err != nil {
 				log.Printf("clearing the expired token: %v", err)
@@ -414,6 +381,7 @@ func (a *app) signIn() {
 			l.loginErr = ""
 			l.storageErr = storageErr
 			l.stage = stageSignedIn
+			a.enterMain()
 		})
 	}()
 }
@@ -446,6 +414,11 @@ func (a *app) signOut() {
 		l.storageErr = "无法清除已保存的登录状态：" + err.Error()
 	} else {
 		l.storageErr = ""
+	}
+	a.main = mainState{}
+	if a.win != nil {
+		a.win.SetMinimumSize(460, 480)
+		a.win.SetSize(480, 520)
 	}
 	l.user = nil
 	l.stage = stageCredentials
