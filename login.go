@@ -86,7 +86,7 @@ func (l *loginState) header(c *ui.Context) {
 			}
 		})
 		ui.Column(c).Gap(2).Children(func() {
-			ui.Text(c, "Immich").FontSize(22).Bold()
+			ui.Text(c, "Immich Mygo").FontSize(22).Bold()
 			ui.Text(c, "第三方桌面客户端").FontSize(12).TextColor(t.TextMuted)
 		})
 	})

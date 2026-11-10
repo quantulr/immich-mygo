@@ -215,7 +215,7 @@ func (a *app) mainSidebar(c *ui.Context) {
 			}
 		})
 		ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-			ui.Text(c, "Immich").FontSize(14).FontWeight(600)
+			ui.Text(c, "Immich Mygo").FontSize(14).FontWeight(600)
 			ui.Text(c, serverName(a.login.serverURL)).FontSize(11).TextColor(t.TextMuted).
 				SingleLine().Ellipsis("…")
 		})

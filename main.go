@@ -69,7 +69,7 @@ func main() {
 		// A saved session opens the window at the main view's size; the
 		// login card stays small.
 		opts := mygo.WindowOptions{
-			Title:     "Immich",
+			Title:     "Immich Mygo",
 			Width:     480,
 			Height:    520,
 			MinWidth:  460,

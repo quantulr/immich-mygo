@@ -1,6 +1,7 @@
 {
-  "name": "immich-mygo",
-  "identifier": "com.example.immichmygo",
+  "name": "Immich Mygo",
+  "slug": "immich-mygo",
+  "identifier": "io.github.quantulr.immichmygo",
   "version": "0.1.0",
   "out": "build"
 }
