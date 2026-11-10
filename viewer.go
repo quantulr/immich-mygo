@@ -921,7 +921,7 @@ func (a *app) viewerVideoMark(c *ui.Context, ms int) {
 func (a *app) viewerLiveMark(c *ui.Context) {
 	ui.Row(c).Absolute().Left(20).Bottom(20).Height(26).Padding(0, 10).Gap(5).Radius(13).
 		Background(ui.RGBA(0, 0, 0, 0.55)).AlignItems(ui.Center).Children(func() {
-		ui.Icon(c, livePhotoIcon).Size(12, 12).TextColor(ui.Hex("#ffffff"))
+		ui.Icon(c, livePhotoIcon).Size(13, 13).TextColor(ui.Hex("#ffffff"))
 		ui.Text(c, "实况照片").FontSize(11.5).TextColor(ui.Hex("#ffffff"))
 	})
 }
