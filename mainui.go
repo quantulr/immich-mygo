@@ -3,12 +3,21 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 )
+
+// sidebarWidth is how wide the sidebar opens, in DIPs.
+const sidebarWidth = 248
+
+// sidebarMotion is how the sidebar comes and goes, as kero's does: a
+// curve that lands quickly, without a spring's crawl under a pixel.
+var sidebarMotion = ui.Animation{Duration: 260 * time.Millisecond, Ease: ui.CubicBezier(0.25, 1, 0.5, 1)}
 
 // section is a page the main window's sidebar leads to.
 type section uint8
@@ -50,6 +59,11 @@ type mainState struct {
 	photos    feed
 	favorites feed
 	albums    feed
+	// sidebarHidden hides the sidebar, which the card's header then offers
+	// to bring back. sidebarProgress is how far it shows this frame, 0 to
+	// 1, which the header reads.
+	sidebarHidden   bool
+	sidebarProgress float32
 }
 
 func (m *mainState) current() *feed {
@@ -81,6 +95,7 @@ var (
 	refreshIcon   = svgIcon(`<path d="M13.2 8a5.2 5.2 0 1 1-1.5-3.7"/><path d="M13.2 2.7v2.8h-2.8"/>`)
 	signOutIcon   = svgIcon(`<path d="M6.6 3H4.7A1.7 1.7 0 0 0 3 4.7v6.6A1.7 1.7 0 0 0 4.7 13h1.9"/><path d="M10.2 5.4L12.8 8l-2.6 2.6"/><path d="M6.6 8h6.2"/>`)
 	errorIcon     = svgIcon(`<circle cx="8" cy="8" r="5.6"/><path d="M8 5.2v3.4"/><path d="M8 10.9v.1"/>`)
+	sidebarIcon   = svgIcon(`<rect x="2" y="3" width="12" height="10" rx="2"/><path d="M6 3v10"/>`)
 
 	minimizeIcon = svgIcon(`<path d="M3.5 8h9"/>`)
 	maximizeIcon = svgIcon(`<rect x="3.5" y="3.5" width="9" height="9" rx="1.5"/>`)
@@ -94,11 +109,25 @@ func svgIcon(shapes string) *ui.SVG {
 }
 
 // mainView is the window after a login: a sidebar on the left, and the
-// section's card beside it, as kero draws its own.
+// section's card beside it, as kero draws its own. The sidebar slides
+// away in whole pixels as it hides, the card taking its room.
 func (a *app) mainView(c *ui.Context) {
 	t := c.Theme()
-	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-		a.mainSidebar(c)
+	row := ui.Row(c).Fill().AlignItems(ui.Stretch)
+	progress := row.AnimateTo("sidebar", b2f(!a.main.sidebarHidden), sidebarMotion)
+	a.main.sidebarProgress = progress
+	sideW := float32(math.Round(float64(sidebarWidth * min(max(progress, 0), 1))))
+	row.Children(func() {
+		ui.Row(c).Width(sideW).Shrink(0).AlignItems(ui.Stretch).ClipX().Children(func() {
+			// The tint and the drag area belong to this column, which the
+			// row stretches to the window's height: a column of its own
+			// would be no taller than what the sidebar lists.
+			ui.Column(c).Width(sidebarWidth).Shrink(0).Background(sidebarTint(t)).DragWindow().
+				Padding(0, 10, 10, 10).Margin(0, 0, 0, sideW-sidebarWidth).
+				Opacity(0.4 + 0.6*progress).Children(func() {
+				a.mainSidebar(c)
+			})
+		})
 		ui.Column(c).Grow(1).MinWidth(0).Padding(8).DragWindow().Children(func() {
 			ui.Column(c).Grow(1).MinHeight(0).Radius(12).Background(cardFace(t)).
 				Border(1, t.Border).Clip().Children(func() {
@@ -107,6 +136,14 @@ func (a *app) mainView(c *ui.Context) {
 			})
 		})
 	})
+}
+
+// b2f is 1 for true, 0 for false, as animations take it.
+func b2f(b bool) float32 {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // sidebarTint is the color under the sidebar, a shade off the card's, as
@@ -135,7 +172,8 @@ func rowHover(t *ui.Theme) ui.Color {
 	return ui.RGBA(0, 0, 0, 0.045)
 }
 
-// mainSidebar lists where the app goes, and who is signed in.
+// mainSidebar lists where the app goes, and who is signed in, in the
+// column mainView wraps.
 func (a *app) mainSidebar(c *ui.Context) {
 	t := c.Theme()
 	bar := c.TitleBar()
@@ -145,32 +183,30 @@ func (a *app) mainSidebar(c *ui.Context) {
 	if !ownControls {
 		lead += bar.Left
 	}
-	ui.Column(c).Width(248).Shrink(0).Background(sidebarTint(t)).DragWindow().
-		Padding(0, 10, 10, 10).Children(func() {
-		ui.Row(c).Height(topBar).Padding(0, 6, 0, lead).Gap(10).AlignItems(ui.Center).DragWindow().Children(func() {
-			ui.Box(c).Size(30, 30).Radius(8).Background(ui.Hex("#ffffff")).Center().Children(func() {
-				if logo != nil {
-					ui.Image(c, logo).Size(26, 26)
-				} else {
-					ui.Text(c, "I").FontSize(16).Bold().TextColor(t.Accent)
-				}
-			})
-			ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-				ui.Text(c, "Immich").FontSize(14).FontWeight(600)
-				ui.Text(c, serverName(a.login.serverURL)).FontSize(11).TextColor(t.TextMuted).
-					SingleLine().Ellipsis("…")
-			})
+	ui.Row(c).Height(topBar).Padding(0, 2, 0, lead).Gap(10).AlignItems(ui.Center).DragWindow().Children(func() {
+		ui.Box(c).Size(30, 30).Radius(8).Background(ui.Hex("#ffffff")).Center().Children(func() {
+			if logo != nil {
+				ui.Image(c, logo).Size(26, 26)
+			} else {
+				ui.Text(c, "I").FontSize(16).Bold().TextColor(t.Accent)
+			}
 		})
-		a.sideSection(c, sectionPhotos, photosIcon)
-		a.sideSection(c, sectionFavorites, favoritesIcon)
-		a.sideSection(c, sectionAlbums, albumsIcon)
-		ui.Spacer(c)
-		if a.login.storageErr != "" {
-			ui.Text(c, a.login.storageErr).FontSize(11).TextColor(t.Warning).
-				MaxWidth(220).Margin(0, 0, 8, 0)
-		}
-		a.sideUser(c)
+		ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
+			ui.Text(c, "Immich").FontSize(14).FontWeight(600)
+			ui.Text(c, serverName(a.login.serverURL)).FontSize(11).TextColor(t.TextMuted).
+				SingleLine().Ellipsis("…")
+		})
+		a.iconButton(c, sidebarIcon, "隐藏边栏", a.toggleSidebar)
 	})
+	a.sideSection(c, sectionPhotos, photosIcon)
+	a.sideSection(c, sectionFavorites, favoritesIcon)
+	a.sideSection(c, sectionAlbums, albumsIcon)
+	ui.Spacer(c)
+	if a.login.storageErr != "" {
+		ui.Text(c, a.login.storageErr).FontSize(11).TextColor(t.Warning).
+			MaxWidth(220).Margin(0, 0, 8, 0)
+	}
+	a.sideUser(c)
 }
 
 // sideSection is a row of the sidebar: a page of the app.
@@ -236,9 +272,19 @@ func (a *app) sideUser(c *ui.Context) {
 
 // cardHeader names the section shown, and offers to load it again. It is
 // the window's title bar too, and keeps room at its right for the window
-// controls over it.
+// controls over it. As the sidebar hides, the button that brings it back
+// comes at its left, and the title makes room.
 func (a *app) cardHeader(c *ui.Context) {
-	ui.Row(c).Height(headerH).Shrink(0).Padding(0, 12, 0, 18).Gap(8).AlignItems(ui.Center).DragWindow().Children(func() {
+	p := a.main.sidebarProgress
+	pad := 18 + 34*(1-p)
+	h := ui.Row(c).Height(headerH).Shrink(0).Padding(0, 12, 0, pad).Gap(8).AlignItems(ui.Center).DragWindow()
+	h.Children(func() {
+		if p < 0.5 {
+			ui.Row(c).Absolute().Left(6).Top(0).Bottom(0).AlignItems(ui.Center).
+				Opacity(1 - 2*p).Children(func() {
+				a.iconButton(c, sidebarIcon, "显示边栏", a.toggleSidebar)
+			})
+		}
 		ui.Text(c, a.main.section.title()).FontSize(15).FontWeight(600)
 		ui.Spacer(c)
 		a.iconButton(c, refreshIcon, "刷新", a.refreshSection)
@@ -248,8 +294,13 @@ func (a *app) cardHeader(c *ui.Context) {
 	})
 }
 
+// toggleSidebar hides the sidebar, or brings it back.
+func (a *app) toggleSidebar() {
+	a.main.sidebarHidden = !a.main.sidebarHidden
+}
+
 // iconButton is a quiet square button with an icon, as in a toolbar.
-func (a *app) iconButton(c *ui.Context, icon *ui.SVG, label string, fn func()) {
+func (a *app) iconButton(c *ui.Context, icon *ui.SVG, label string, fn func()) ui.Element {
 	t := c.Theme()
 	b := ui.ButtonBase(c).Size(28, 26).Radius(6).Center().Label(label).Tooltip(label)
 	if b.Pressed() {
@@ -261,6 +312,7 @@ func (a *app) iconButton(c *ui.Context, icon *ui.SVG, label string, fn func()) {
 	if b.Clicked() {
 		fn()
 	}
+	return b
 }
 
 // windowControls are the window's minimize, maximize and close buttons,

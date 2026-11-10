@@ -341,6 +341,40 @@ func TestFetchAccount(t *testing.T) {
 	}
 }
 
+func TestSidebarToggles(t *testing.T) {
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = "https://photos.example.com"
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com"}
+	tt := ui.NewTester(a.view, 1200, 720)
+	tt.Advance(500 * time.Millisecond)
+	tt.Frame()
+
+	if err := tt.Click("隐藏边栏"); err != nil {
+		t.Fatal(err)
+	}
+	if !a.main.sidebarHidden {
+		t.Fatal("the sidebar is not hidden")
+	}
+	tt.Advance(500 * time.Millisecond)
+	tt.Frame()
+	if !tt.HasText("显示边栏") {
+		t.Errorf("texts %q with the sidebar hidden", tt.Texts())
+	}
+
+	if err := tt.Click("显示边栏"); err != nil {
+		t.Fatal(err)
+	}
+	if a.main.sidebarHidden {
+		t.Error("the sidebar is still hidden")
+	}
+	tt.Advance(500 * time.Millisecond)
+	tt.Frame()
+	if !tt.HasText("隐藏边栏") {
+		t.Errorf("texts %q with the sidebar back", tt.Texts())
+	}
+}
+
 func TestFramedHidesTitleBar(t *testing.T) {
 	old := ownControls
 	defer func() { ownControls = old }()
