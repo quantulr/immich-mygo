@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 
 	"github.com/egoist/mygo"
@@ -12,43 +11,37 @@ import (
 // it, on the main thread, whenever the window needs a frame: after input,
 // after Window.Update, and while something animates.
 type app struct {
-	name  string
-	count int
+	win   *mygo.Window
+	login loginState
 }
 
 func (a *app) view(c *ui.Context) {
-	t := c.Theme()
-	ui.Column(c).Fill().Center().Gap(16).Padding(24).Children(func() {
-		ui.Text(c, "immich-mygo").FontSize(26).Bold()
-		ui.TextInput(c, &a.name).Placeholder("Your name").Label("Name").Width(240)
-		greeting := "Hello!"
-		if a.name != "" {
-			greeting = fmt.Sprintf("Hello, %s!", a.name)
-		}
-		ui.Text(c, greeting).TextColor(t.TextMuted)
-		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-			if ui.Button(c, "−").Width(44).Clicked() {
-				a.count--
-			}
-			ui.Textf(c, "%d", a.count).FontSize(20).Width(48).TextAlign(ui.Center)
-			if ui.PrimaryButton(c, "+").Width(44).Clicked() {
-				a.count++
-			}
-		})
-	})
+	a.login.view(c, a)
+}
+
+// update applies a change of the state on the main thread, then redraws
+// the window. Checks started by connect run in a goroutine and publish
+// their result through it.
+func (a *app) update(fn func()) {
+	if a.win == nil {
+		// The tests run the view without a window.
+		fn()
+		return
+	}
+	a.win.Update(fn)
 }
 
 func main() {
 	a := &app{}
 	mygo.App.WhenReady(func() {
-		mygo.NewWindow(mygo.WindowOptions{
-			Title:     "immich-mygo",
+		a.win = mygo.NewWindow(mygo.WindowOptions{
+			Title:     "Immich",
 			Width:     480,
-			Height:    360,
-			MinWidth:  320,
-			MinHeight: 280,
+			Height:    520,
+			MinWidth:  460,
+			MinHeight: 480,
 			// Opens where the user left it last time.
-			StateKey: "main",
+			StateKey: "login",
 			// The window shows the interface MyGo draws, not a web page.
 			Content: ui.View(a.view),
 		})
