@@ -1050,6 +1050,133 @@ func TestPhotoPageDetails(t *testing.T) {
 	tt.Frame()
 }
 
+// TestPhotoPageDetailsWithoutThumbhash checks that an asset whose info
+// leaves out thumbhash, as Immich may for one it has no blur hash of, still
+// tells its details: the field is nullable, and the app does not read it.
+func TestPhotoPageDetailsWithoutThumbhash(t *testing.T) {
+	srv := detailsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{
+			"originalFileName":"IMG_0001.jpg",
+			"localDateTime":"2024-05-02T14:32:00.000Z",
+			"width":4032,"height":3024,"type":"IMAGE"
+		}`)
+	})
+	defer srv.Close()
+	withTestSession(t)
+
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = srv.URL
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com", Token: "token-123"}
+	a.enterMain()
+
+	tt := ui.NewTester(a.view, 1120, 720)
+	tt.Frame()
+	tt.Frame()
+	waitFor(t, "the day", func() bool {
+		f := &a.main.photos
+		return f.loaded && len(f.days) == 1 && f.days[0].loaded &&
+			len(f.days[0].photos) == 1
+	})
+	tt.Frame()
+	if err := tt.Click("照片 1"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the image", func() bool {
+		return a.main.viewer != nil && a.main.viewer.bm != nil
+	})
+	if err := tt.Click("详情"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the details", func() bool {
+		v := a.main.viewer
+		return v != nil && v.details != nil
+	})
+	tt.Frame()
+	if !tt.HasText("IMG_0001.jpg") || !tt.HasText("4032 × 3024") {
+		t.Errorf("texts %q on the details without thumbhash", tt.Texts())
+	}
+	if tt.HasText("无法加载详情") {
+		t.Errorf("texts %q say the details failed", tt.Texts())
+	}
+}
+
+// TestPhotoPageDetailsMissingAsset keeps the details' 404 apart from a wrong
+// server address: the asset is gone or unreadable, not the interface.
+func TestPhotoPageDetailsMissingAsset(t *testing.T) {
+	srv := detailsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"Not found or no asset.read access"}`, http.StatusNotFound)
+	})
+	defer srv.Close()
+	withTestSession(t)
+
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = srv.URL
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com", Token: "token-123"}
+	a.enterMain()
+
+	tt := ui.NewTester(a.view, 1120, 720)
+	tt.Frame()
+	tt.Frame()
+	waitFor(t, "the day", func() bool {
+		f := &a.main.photos
+		return f.loaded && len(f.days) == 1 && f.days[0].loaded &&
+			len(f.days[0].photos) == 1
+	})
+	tt.Frame()
+	if err := tt.Click("照片 1"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the image", func() bool {
+		return a.main.viewer != nil && a.main.viewer.bm != nil
+	})
+	if err := tt.Click("详情"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the details' error", func() bool {
+		v := a.main.viewer
+		return v != nil && v.detailsErr != nil
+	})
+	tt.Frame()
+	if !tt.HasText("无法加载详情") || !tt.HasText("没有找到这个资源") {
+		t.Errorf("texts %q after the details' 404", tt.Texts())
+	}
+	if tt.HasText("没有找到 Immich 接口") {
+		t.Errorf("texts %q take a missing asset for a wrong address", tt.Texts())
+	}
+}
+
+// detailsServer serves one day of an image, its thumbnail, and what the
+// asset info endpoint says, which info answers.
+func detailsServer(t *testing.T, info http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	thumb := testPNG(t)
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/timeline/buckets":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[{"timeBucket":"2024-05-02","count":1}]`)
+		case r.URL.Path == "/api/timeline/bucket":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{
+				"id":["`+testAssetID+`"],
+				"isImage":[true],
+				"ratio":[1.5],
+				"duration":[null]
+			}`)
+		case strings.HasSuffix(r.URL.Path, "/thumbnail"):
+			w.Header().Set("Content-Type", "image/png")
+			w.Write(thumb)
+		case strings.HasPrefix(r.URL.Path, "/api/assets/"):
+			info(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
 // TestPhotoPageError keeps the page open on a photo whose image the server
 // will not give, offering to try again.
 func TestPhotoPageError(t *testing.T) {

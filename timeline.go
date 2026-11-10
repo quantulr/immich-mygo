@@ -111,7 +111,8 @@ func fetchTimelineDays(base, token string, src timelineSource) ([]*timelineDay, 
 	if err != nil {
 		return nil, requestError(err)
 	}
-	if err := statusErr(resp.StatusCode(), resp.Status()); err != nil {
+	if err := statusErr(resp.StatusCode(), resp.Status(),
+		"没有找到时间线，请确认服务器地址与版本"); err != nil {
 		return nil, err
 	}
 	if resp.JSON200 == nil {
@@ -180,7 +181,8 @@ func fetchBucket(ctx context.Context, client *immichapi.ClientWithResponses, buc
 	if err != nil {
 		return nil, requestError(err)
 	}
-	if err := statusErr(resp.StatusCode(), resp.Status()); err != nil {
+	if err := statusErr(resp.StatusCode(), resp.Status(),
+		"没有找到这一天的照片，请刷新时间线"); err != nil {
 		return nil, err
 	}
 	if resp.JSON200 == nil {
@@ -215,7 +217,8 @@ func fetchAlbums(base, token string) ([]*album, error) {
 	if err != nil {
 		return nil, requestError(err)
 	}
-	if err := statusErr(resp.StatusCode(), resp.Status()); err != nil {
+	if err := statusErr(resp.StatusCode(), resp.Status(),
+		"没有找到相册，请刷新"); err != nil {
 		return nil, err
 	}
 	if resp.JSON200 == nil {
@@ -261,7 +264,8 @@ func fetchAssetImage(base, token, id string, size immichapi.AssetMediaSize, what
 	if err != nil {
 		return nil, requestError(err)
 	}
-	if err := statusErr(resp.StatusCode(), resp.Status()); err != nil {
+	if err := statusErr(resp.StatusCode(), resp.Status(),
+		"没有找到"+what+"，可能已被删除，或当前账号无权访问"); err != nil {
 		return nil, err
 	}
 	bm, err := ui.DecodeBitmap(resp.Body)
@@ -290,7 +294,8 @@ func fetchAssetDetails(base, token, id string) (*assetDetails, error) {
 	if err != nil {
 		return nil, requestError(err)
 	}
-	if err := statusErr(resp.StatusCode(), resp.Status()); err != nil {
+	if err := statusErr(resp.StatusCode(), resp.Status(),
+		"没有找到这个资源，可能已被删除，或当前账号无权访问"); err != nil {
 		return nil, err
 	}
 	if resp.JSON200 == nil {
@@ -387,15 +392,16 @@ func durationLabel(ms int) string {
 }
 
 // statusErr names a response status in the user's words; a refused token
-// is errSessionExpired.
-func statusErr(code int, status string) error {
+// is errSessionExpired, and a 404 means the server found nothing, which
+// missing tells for the request that asked.
+func statusErr(code int, status, missing string) error {
 	switch {
 	case code == http.StatusOK:
 		return nil
 	case code == http.StatusUnauthorized, code == http.StatusForbidden:
 		return errSessionExpired
 	case code == http.StatusNotFound:
-		return errors.New("没有找到 Immich 接口，请确认服务器地址")
+		return errors.New(missing)
 	default:
 		return fmt.Errorf("服务器返回了 %s", status)
 	}
