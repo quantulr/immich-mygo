@@ -747,9 +747,21 @@ func (a *app) photoTile(c *ui.Context, f *feed, day int, d *timelineDay, j int) 
 			ui.Icon(c, icon).Size(20, 20).TextColor(t.TextMuted)
 		})
 	}
+	if p != nil && p.Favorite && !f.source.favorites {
+		tile.Children(func() { a.favoriteBadge(c) })
+	}
 	if p != nil && tile.Clicked() {
 		a.openPhoto(f, day, j)
 	}
+}
+
+// favoriteBadge marks a favorite's tile as one; the favorites page leaves
+// it out, where every tile is a favorite's.
+func (a *app) favoriteBadge(c *ui.Context) {
+	ui.Box(c).Absolute().Right(6).Top(6).Size(20, 20).Radius(10).
+		Background(ui.RGBA(0, 0, 0, 0.55)).Center().Label("已收藏").Children(func() {
+		ui.Icon(c, favoritesOnIcon).Size(12, 12).TextColor(ui.Hex("#ffffff"))
+	})
 }
 
 // videoBadge marks a video tile, and how long it runs.
