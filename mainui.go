@@ -146,7 +146,7 @@ func svgIcon(shapes string) *ui.SVG {
 // away in whole pixels as it hides, the card taking its room.
 func (a *app) mainView(c *ui.Context) {
 	t := c.Theme()
-	row := ui.Row(c).Fill().AlignItems(ui.Stretch)
+	row := ui.Row(c).Fill().AlignItems(ui.Stretch).Background(windowTint(t))
 	progress := row.AnimateTo("sidebar", b2f(!a.main.sidebarHidden), sidebarMotion)
 	a.main.sidebarProgress = progress
 	sideW := float32(math.Round(float64(sidebarWidth * min(max(progress, 0), 1))))
@@ -155,7 +155,7 @@ func (a *app) mainView(c *ui.Context) {
 			// The tint and the drag area belong to this column, which the
 			// row stretches to the window's height: a column of its own
 			// would be no taller than what the sidebar lists.
-			ui.Column(c).Width(sidebarWidth).Shrink(0).Background(sidebarTint(t)).DragWindow().
+			ui.Column(c).Width(sidebarWidth).Shrink(0).DragWindow().
 				Padding(0, 10, 10, 10).Margin(0, 0, 0, sideW-sidebarWidth).
 				Opacity(0.4 + 0.6*progress).Children(func() {
 				a.mainSidebar(c)
@@ -179,9 +179,10 @@ func b2f(b bool) float32 {
 	return 0
 }
 
-// sidebarTint is the color under the sidebar, a shade off the card's, as
-// kero washes its own.
-func sidebarTint(t *ui.Theme) ui.Color {
+// windowTint is the window's fill behind the sidebar and around the card:
+// one color for all that is not content, a shade off the card's in the
+// light, the theme's background in the dark.
+func windowTint(t *ui.Theme) ui.Color {
 	if t.Dark {
 		return t.Background
 	}
