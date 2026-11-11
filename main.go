@@ -46,9 +46,16 @@ type app struct {
 	video videoState
 	// preferences are the interface's choices that outlast a run.
 	preferences preferences
+	// notice is what the view tells as a toast on its next build, as the
+	// outcome of work that finished after the user asked for it.
+	notice string
 }
 
 func (a *app) view(c *ui.Context) {
+	if a.notice != "" {
+		c.Toast(a.notice)
+		a.notice = ""
+	}
 	if a.login.stage == stageSignedIn {
 		a.mainView(c)
 	} else {

@@ -57,6 +57,10 @@ type viewer struct {
 	details        *assetDetails
 	detailsErr     error
 	detailsAttempt int
+	// favorite tells that the asset shown is one of the user's favorites,
+	// and favoriteBusy that a change of the mark is on its way.
+	favorite     bool
+	favoriteBusy bool
 	// liveAt is when the press that shows a live photo's motion began,
 	// zero while none does, where it began, and liveOn tells that the
 	// motion plays.
@@ -110,10 +114,16 @@ func (a *app) showViewerPhoto(f *feed, dayKey, id string) {
 		a.stopVideo()
 	}
 	if changed {
-		// Another asset: its details are not this one's.
+		// Another asset: its details are not this one's, nor its favorite
+		// mark.
 		v.details = nil
 		v.detailsErr = nil
 		v.detailsAttempt++
+		v.favorite = false
+		v.favoriteBusy = false
+		if p := v.photo(); p != nil {
+			v.favorite = p.Favorite
+		}
 		if v.showDetails {
 			a.loadDetails(v)
 		}
@@ -166,6 +176,36 @@ func (a *app) toggleDetails() {
 	if v.showDetails && v.details == nil && v.detailsErr == nil {
 		a.loadDetails(v)
 	}
+}
+
+// toggleFavorite marks the asset shown as a favorite, or takes the mark
+// away, off the UI thread, and keeps what the server says of it.
+func (a *app) toggleFavorite(v *viewer) {
+	if v == nil || v.favoriteBusy || a.login.user == nil || a.login.user.Token == "" {
+		return
+	}
+	id, favorite := v.id, !v.favorite
+	v.favoriteBusy = true
+	base, token := a.login.serverURL, a.login.user.Token
+	go func() {
+		got, err := setAssetFavorite(base, token, id, favorite)
+		a.update(func() {
+			if a.main.viewer != v || v.id != id {
+				return
+			}
+			v.favoriteBusy = false
+			if err != nil {
+				a.notice = "无法更新收藏：" + err.Error()
+				return
+			}
+			v.favorite = got
+			// The timeline the page walks keeps the mark too, so that the
+			// asset shows it when the page comes back to it.
+			if p := v.photo(); p != nil {
+				p.Favorite = got
+			}
+		})
+	}()
 }
 
 // loadDetails loads what the details panel tells of the asset shown, off
@@ -738,6 +778,37 @@ func (a *app) viewerError(c *ui.Context, v *viewer) {
 		ui.Box(c).Height(4)
 		ui.PrimaryButton(c, action).OnClick(fn)
 	})
+}
+
+// favoriteButton is the page's header button for the favorite mark: a red
+// heart while the asset is a favorite, a quiet outline while it is not.
+func (a *app) favoriteButton(c *ui.Context, v *viewer) {
+	t := c.Theme()
+	label := "收藏"
+	if v.favorite {
+		label = "取消收藏"
+	}
+	b := ui.ButtonBase(c).Size(28, 26).Radius(6).Center().Label(label).Tooltip(label).
+		KeepFocus()
+	switch {
+	case b.Pressed():
+		b.Background(t.SurfacePressed)
+	case b.Hovered() || v.favorite:
+		b.Background(t.SurfaceHover)
+	}
+	fg, icon := t.TextMuted, favoritesIcon
+	if v.favorite {
+		fg, icon = t.Danger, favoritesOnIcon
+	}
+	b.Children(func() {
+		heart := ui.Icon(c, icon).Size(15, 15).TextColor(fg)
+		if v.favoriteBusy {
+			heart.Opacity(0.5)
+		}
+	})
+	if !v.favoriteBusy && b.Clicked() {
+		a.toggleFavorite(v)
+	}
 }
 
 // detailsButton is the page's header button for the details panel, lit

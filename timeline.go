@@ -33,6 +33,8 @@ type timelineDay struct {
 type photo struct {
 	ID    string
 	Video bool
+	// Favorite tells that the user marked the asset as a favorite.
+	Favorite bool
 	// Live tells a live photo: a still with a video of its own, which the
 	// timeline marks as one; LiveVideo is the ID of that video.
 	Live      bool
@@ -216,6 +218,9 @@ func fetchBucket(ctx context.Context, client *immichapi.ClientWithResponses, buc
 		p := &photo{ID: id}
 		if i < len(d.IsImage) {
 			p.Video = !d.IsImage[i]
+		}
+		if i < len(d.IsFavorite) {
+			p.Favorite = d.IsFavorite[i]
 		}
 		if i < len(d.Duration) && d.Duration[i] != nil {
 			p.Duration = *d.Duration[i]
@@ -413,6 +418,35 @@ func fetchAssetDetails(base, token, id string) (*assetDetails, error) {
 		}
 	}
 	return ad, nil
+}
+
+// setAssetFavorite marks an asset as a favorite, or takes the mark away,
+// and returns the mark the server keeps.
+func setAssetFavorite(base, token, id string, favorite bool) (bool, error) {
+	assetID, err := uuid.Parse(id)
+	if err != nil {
+		return false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	client, err := immichClient(base, token)
+	if err != nil {
+		return false, err
+	}
+	resp, err := client.UpdateAssetWithResponse(ctx, assetID,
+		immichapi.UpdateAssetDto{IsFavorite: &favorite})
+	if err != nil {
+		return false, requestError(err)
+	}
+	if err := statusErr(resp.StatusCode(), resp.Status(),
+		"没有找到这个资源，可能已被删除，或当前账号无权访问"); err != nil {
+		return false, err
+	}
+	if resp.JSON200 != nil {
+		return resp.JSON200.IsFavorite, nil
+	}
+	return favorite, nil
 }
 
 // stringOf is the string an optional response field holds, or "".
