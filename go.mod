@@ -8,7 +8,7 @@ tool (
 )
 
 require (
-	github.com/egoist/mygo v0.8.4-0.20261110143752-d4a6da45c41d
+	github.com/egoist/mygo v0.9.0
 	github.com/google/uuid v1.6.0
 	github.com/oapi-codegen/runtime v1.8.0
 )

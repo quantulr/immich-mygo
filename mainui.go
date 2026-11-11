@@ -534,7 +534,7 @@ func (a *app) controlButtons(c *ui.Context, t *ui.Theme) {
 func (a *app) searchControl(c *ui.Context) {
 	s := &a.main.search
 	t := c.Theme()
-	row := ui.Row(c).Key("header-search").Height(28).Shrink(0).
+	row := ui.Row(c.Key("header-search")).Height(28).Shrink(0).
 		ClipX().AlignItems(ui.Center)
 	progress := row.AnimateTo("expanded", b2f(s.open), searchMotion)
 	row.Width(28 + (searchWidth-28)*progress).Children(func() {
@@ -676,7 +676,7 @@ func (a *app) controlButton(c *ui.Context, t *ui.Theme, icon *ui.SVG, label stri
 // loading them went. The image page and the section cross-fade in a box
 // that stays, so that a photo may fly from its tile to the page and back.
 func (a *app) cardBody(c *ui.Context) {
-	ui.Box(c).Key("card-stage").Grow(1).MinHeight(0).Clip().Children(func() {
+	ui.Box(c.Key("card-stage")).Grow(1).MinHeight(0).Clip().Children(func() {
 		if v := a.main.viewer; v != nil {
 			ui.Box(c.Key("card-photo-page")).Absolute().Fill().
 				Transition(photoStageFlight).Children(func() {
