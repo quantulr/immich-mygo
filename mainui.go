@@ -89,12 +89,29 @@ type feed struct {
 	list    ui.ListState
 }
 
-// searchState is the header's expandable search field.
+// searchWidth is how wide the search field opens, and the panel of filter
+// conditions beneath it; searchFiltersH is how tall that panel grows, in
+// DIPs.
+const (
+	searchWidth    = 280
+	searchFiltersH = 120
+)
+
+// searchState is the header's expandable search field, and the panel of
+// filter conditions it opens beneath itself.
 type searchState struct {
 	open         bool
 	query        string
 	focused      bool
 	focusPending bool
+	// filtersOpen shows the filter panel; filtersGrown tells that its first
+	// frame passed, so that it grows downward from nothing.
+	filtersOpen  bool
+	filtersGrown bool
+	// mediaType and favorite are the filter conditions chosen: 0 for all,
+	// 1 for the first choice, and 2 for the second.
+	mediaType int
+	favorite  int
 }
 
 // mainState is the main window: the section shown, and each section's
@@ -512,14 +529,15 @@ func (a *app) controlButtons(c *ui.Context, t *ui.Theme) {
 
 // searchControl is the header's search button: clicking the magnifying
 // glass expands it into a search field, which closes when it loses the
-// focus while empty.
+// focus while empty; once widened, the field opens a panel of filter
+// conditions beneath itself.
 func (a *app) searchControl(c *ui.Context) {
 	s := &a.main.search
 	t := c.Theme()
 	row := ui.Row(c).Key("header-search").Height(28).Shrink(0).
 		ClipX().AlignItems(ui.Center)
 	progress := row.AnimateTo("expanded", b2f(s.open), searchMotion)
-	row.Width(28 + 192*progress).Children(func() {
+	row.Width(28 + (searchWidth-28)*progress).Children(func() {
 		if !s.open && progress < 0.01 {
 			b := ui.ButtonBase(c).Size(28, 26).Radius(6).Center().
 				Label("搜索").Tooltip("搜索照片")
@@ -554,11 +572,88 @@ func (a *app) searchControl(c *ui.Context) {
 		if focused {
 			s.focused = true
 		}
-		if strings.TrimSpace(s.query) == "" && s.focused && !focused {
+		if strings.TrimSpace(s.query) == "" && s.focused && !focused && !s.filtersOpen {
 			s.open = false
 			s.focused = false
 		}
 	})
+	// The filter panel comes once the field has widened, and grows downward
+	// from its first frame.
+	if !s.open {
+		s.filtersOpen = false
+	} else if !s.filtersOpen && progress > 0.999 {
+		s.filtersOpen = true
+		s.filtersGrown = false
+		c.After(0)
+	}
+	a.searchFilters(c, row)
+}
+
+// searchFilters is the panel of filter conditions below the search field. It
+// opens once the field has widened, grows downward, and closes with the
+// whole search when pressed outside or dismissed with Escape.
+func (a *app) searchFilters(c *ui.Context, anchor ui.Element) {
+	s := &a.main.search
+	if !s.filtersOpen {
+		return
+	}
+	t := c.Theme()
+	panel := ui.PopoverBase(c, anchor, &s.filtersOpen, func(panel ui.Element) {
+		target := float32(0)
+		if s.filtersGrown {
+			target = searchFiltersH
+		}
+		h := panel.AnimateTo("grow", target, searchMotion)
+		panel.AttachTo(anchor, ui.AnchorBottomRight, ui.AnchorTopRight).
+			Margin(6, 0, 0, 0).Width(searchWidth).Height(h).Clip().
+			Radius(10).Background(cardFace(t)).Border(1, t.Border).
+			Shadow(0, 8, 24, 0, ui.RGBA(0, 0, 0, 0.18))
+		panel.Children(func() {
+			ui.Column(c).Gap(10).Padding(12).Children(func() {
+				ui.Row(c).Height(18).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "筛选条件").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
+					ui.Spacer(c)
+					a.clearFiltersButton(c)
+				})
+				a.searchFilterRow(c, "类型", &s.mediaType, "全部", "照片", "视频")
+				a.searchFilterRow(c, "收藏", &s.favorite, "全部", "已收藏", "未收藏")
+			})
+		})
+		if !s.filtersGrown {
+			s.filtersGrown = true
+			c.After(0)
+		}
+	})
+	if panel.Dismissed() {
+		s.open = false
+		s.focused = false
+		s.filtersOpen = false
+	}
+}
+
+// searchFilterRow is one filter condition: its name, and the choices.
+func (a *app) searchFilterRow(c *ui.Context, label string, selected *int, choices ...string) {
+	ui.Row(c).Height(28).AlignItems(ui.Center).Gap(8).Children(func() {
+		ui.Text(c, label).Width(34).Shrink(0).FontSize(12).TextColor(c.Theme().TextMuted)
+		ui.Segmented(c, selected, choices...).Grow(1).MinWidth(0).
+			FillEqually().Label("按" + label + "筛选")
+	})
+}
+
+// clearFiltersButton takes every filter condition back to all.
+func (a *app) clearFiltersButton(c *ui.Context) {
+	s := &a.main.search
+	t := c.Theme()
+	b := ui.ButtonBase(c).Height(18).Padding(0, 6).Radius(4).Label("清除筛选")
+	if b.Pressed() {
+		b.Background(t.SurfacePressed)
+	} else if b.Hovered() {
+		b.Background(t.SurfaceHover)
+	}
+	b.Children(func() { ui.Text(c, "清除").FontSize(11).TextColor(t.TextMuted) })
+	if b.Clicked() {
+		s.mediaType, s.favorite = 0, 0
+	}
 }
 
 // controlButton is one of the window's own buttons: quiet, and lighting
