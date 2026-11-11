@@ -291,6 +291,13 @@ func (v *viewer) photo() *photo {
 func (a *app) photoPage(c *ui.Context, v *viewer) {
 	p := v.photo()
 	isVideo := p != nil && p.Video
+	// bm is what the stage shows: the larger image once it loads, or the
+	// thumbnail standing in for it, so that the photo flies in from its
+	// tile at once, not when the larger image comes.
+	bm := v.bm
+	if bm == nil && p != nil && !isVideo {
+		bm = p.Bm
+	}
 	stage := ui.Box(c).Fill().Background(ui.Hex("#0e0f13")).Clip().
 		Focusable().FocusRing(false)
 	if v.focusStage {
@@ -361,18 +368,24 @@ func (a *app) photoPage(c *ui.Context, v *viewer) {
 			ui.Box(c).Fill().Padding(0, panel, 0, 0).Children(func() {
 				a.viewerError(c, v)
 			})
-		case v.bm != nil:
-			lay := v.layout(photoStage, v.bm)
+		case bm != nil:
+			lay := v.layout(photoStage, bm)
 			switch {
 			case livePlaying:
 				a.viewerLiveVideo(c, v, lay)
 			case lay.w > 0:
-				ui.Image(c, v.bm).Absolute().Left(lay.x).Top(lay.y).
+				img := ui.Image(c, bm).Absolute().Left(lay.x).Top(lay.y).
 					Width(lay.w).Height(lay.h).Fit(ui.Cover)
+				if !isVideo && v.zoomFactor() == 1 && !livePlaying {
+					img.Transition(photoFlight(v.id))
+				}
 			default:
 				// The first frame, before the stage's box is known.
 				ui.Box(c).Fill().Padding(viewerPad).Children(func() {
-					ui.Image(c, v.bm).Fill().Fit(ui.Contain)
+					img := ui.Image(c, bm).Fill().Fit(ui.Contain)
+					if !isVideo && !livePlaying {
+						img.Transition(photoFlight(v.id))
+					}
 				})
 			}
 			if isVideo {

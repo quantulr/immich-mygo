@@ -20,6 +20,35 @@ const sidebarWidth = 248
 // curve that lands quickly, without a spring's crawl under a pixel.
 var sidebarMotion = ui.Animation{Duration: 260 * time.Millisecond, Ease: ui.CubicBezier(0.25, 1, 0.5, 1)}
 
+// photoMatch is the identity a photo's thumbnail shares with its image
+// page, which tells the frames that the two are one.
+type photoMatch struct{ id string }
+
+// photoFlight is how a photo goes between its thumbnail and the image
+// page: from the one's box to the other's, its picture scaled on the way.
+func photoFlight(id string) ui.ElementTransition {
+	return ui.ElementTransition{
+		Duration:     260 * time.Millisecond,
+		Ease:         ui.CubicBezier(0.25, 1, 0.5, 1),
+		Match:        photoMatch{id},
+		Fly:          true,
+		ScaleContent: true,
+		// Colors is on, leaving Position and Size off: a tile goes where
+		// the grid puts it at once, and only the flight moves it.
+		Colors: true,
+	}
+}
+
+// photoStageFlight fades the image page in over the timeline as a photo
+// flies in, and the timeline back over it as the photo returns.
+var photoStageFlight = ui.ElementTransition{
+	Duration: 220 * time.Millisecond,
+	Ease:     ui.CubicBezier(0.25, 1, 0.5, 1),
+	Enter:    &ui.Motion{},
+	Exit:     &ui.Motion{},
+	Colors:   true,
+}
+
 // section is a page the main window's sidebar leads to.
 type section uint8
 
@@ -480,12 +509,26 @@ func (a *app) controlButton(c *ui.Context, t *ui.Theme, icon *ui.SVG, label stri
 }
 
 // cardBody shows the section: its days, its albums, the image page, or how
-// loading them went.
+// loading them went. The image page and the section cross-fade in a box
+// that stays, so that a photo may fly from its tile to the page and back.
 func (a *app) cardBody(c *ui.Context) {
-	if v := a.main.viewer; v != nil {
-		a.photoPage(c, v)
-		return
-	}
+	ui.Box(c).Key("card-stage").Grow(1).MinHeight(0).Clip().Children(func() {
+		if v := a.main.viewer; v != nil {
+			ui.Box(c.Key("card-photo-page")).Absolute().Fill().
+				Transition(photoStageFlight).Children(func() {
+				a.photoPage(c, v)
+			})
+			return
+		}
+		ui.Box(c.Key("card-section")).Absolute().Fill().
+			Transition(photoStageFlight).Children(func() {
+			a.sectionBody(c)
+		})
+	})
+}
+
+// sectionBody shows the section the sidebar names.
+func (a *app) sectionBody(c *ui.Context) {
 	f := a.main.current()
 	switch {
 	case f.err != nil:
@@ -677,7 +720,10 @@ func (a *app) photoTile(c *ui.Context, f *feed, day int, d *timelineDay, j int) 
 	switch {
 	case p != nil && p.Bm != nil:
 		tile.Children(func() {
-			ui.Image(c, p.Bm).Fill().Fit(ui.Cover)
+			img := ui.Image(c, p.Bm).Fill().Fit(ui.Cover)
+			if !p.Video {
+				img.Transition(photoFlight(p.ID))
+			}
 			switch {
 			case p.Video:
 				a.videoBadge(c, p.Duration)
