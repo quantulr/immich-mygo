@@ -1615,6 +1615,63 @@ func TestAlbumPage(t *testing.T) {
 	}
 }
 
+// TestSidebarAvatar shows the user's profile image in the sidebar, and
+// their initial when the server has none.
+func TestSidebarAvatar(t *testing.T) {
+	avatar := testPNG(t)
+	serve := func(withAvatar bool) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/api/timeline/buckets":
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, `[]`)
+			case r.URL.Path == "/api/users/"+testAssetID+"/profile-image" && withAvatar:
+				w.Header().Set("Content-Type", "image/png")
+				w.Write(avatar)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	}
+	newApp := func(serverURL string) *app {
+		a := &app{}
+		a.login.stage = stageSignedIn
+		a.login.serverURL = serverURL
+		a.login.user = &account{ID: testAssetID, Name: "Zoe", Email: "zoe@example.com", Token: "token-123"}
+		a.enterMain()
+		return a
+	}
+
+	withTestSession(t)
+	// The server's image takes the initial's place.
+	srv := serve(true)
+	a := newApp(srv.URL)
+	waitFor(t, "the avatar", func() bool { return a.main.avatar != nil })
+	tt := ui.NewTester(a.view, 1120, 720)
+	tt.Frame()
+	if !tt.HasText("头像") {
+		t.Errorf("texts %q do not show the avatar", tt.Texts())
+	}
+	if a.main.avatarFailed {
+		t.Error("the avatar failed although the server gave one")
+	}
+	srv.Close()
+
+	// A user without one keeps their initial.
+	srv = serve(false)
+	defer srv.Close()
+	a = newApp(srv.URL)
+	waitFor(t, "the avatar's refusal", func() bool { return a.main.avatarFailed })
+	tt = ui.NewTester(a.view, 1120, 720)
+	tt.Frame()
+	if a.main.avatar != nil {
+		t.Error("an avatar came from a server without one")
+	}
+	if _, ok := tt.Find("Z"); !ok {
+		t.Errorf("texts %q do not show the initial", tt.Texts())
+	}
+}
+
 func TestLoginFlowReachesMain(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

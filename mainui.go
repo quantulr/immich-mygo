@@ -75,6 +75,10 @@ type mainState struct {
 	// 1, which the header reads.
 	sidebarHidden   bool
 	sidebarProgress float32
+	// avatar is the user's profile image once it loads; avatarFailed tells
+	// a load that failed, which leaves their initial in its place.
+	avatar       *ui.Bitmap
+	avatarFailed bool
 }
 
 func (m *mainState) current() *feed {
@@ -282,9 +286,16 @@ func (a *app) sideUser(c *ui.Context) {
 		email = a.login.user.Email
 	}
 	ui.Row(c).Height(42).Padding(0, 6).Gap(9).AlignItems(ui.Center).Children(func() {
-		ui.Box(c).Size(28, 28).Radius(14).Background(t.Accent).Center().Children(func() {
-			ui.Text(c, initial(name, email)).FontSize(12).Bold().TextColor(t.AccentText)
-		})
+		avatar := ui.Box(c).Size(28, 28).Radius(14).Clip().Center()
+		if bm := a.main.avatar; bm != nil {
+			avatar.Children(func() {
+				ui.Image(c, bm).Fill().Fit(ui.Cover).Label("头像")
+			})
+		} else {
+			avatar.Background(t.Accent).Children(func() {
+				ui.Text(c, initial(name, email)).FontSize(12).Bold().TextColor(t.AccentText)
+			})
+		}
 		ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
 			ui.Text(c, name).FontSize(12.5).SingleLine().Ellipsis("…")
 			if email != "" {
@@ -872,6 +883,31 @@ func (a *app) enterMain() {
 		}
 	}
 	a.loadTimeline(&a.main.photos)
+	a.loadAvatar()
+}
+
+// loadAvatar loads the user's profile image off the UI thread, publishing
+// it through app.update. Their initial stands in until it comes.
+func (a *app) loadAvatar() {
+	u := a.login.user
+	if u == nil || u.ID == "" || u.Token == "" {
+		return
+	}
+	base, id, token := a.login.serverURL, u.ID, u.Token
+	go func() {
+		bm, err := fetchAvatar(base, token, id)
+		a.update(func() {
+			// Another account may have signed in meanwhile.
+			if u := a.login.user; u == nil || u.ID != id || u.Token != token {
+				return
+			}
+			if err != nil {
+				a.main.avatarFailed = true
+				return
+			}
+			a.main.avatar = bm
+		})
+	}()
 }
 
 // loadAlbums loads the albums of the grid off the UI thread, publishing

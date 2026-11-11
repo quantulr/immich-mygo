@@ -258,6 +258,33 @@ func fetchAlbums(base, token string) ([]*album, error) {
 	return albums, nil
 }
 
+// fetchAvatar returns the profile image of a user.
+func fetchAvatar(base, token, id string) (*ui.Bitmap, error) {
+	userID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	client, err := immichClient(base, token)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.GetProfileImageWithResponse(ctx, userID)
+	if err != nil {
+		return nil, requestError(err)
+	}
+	if err := statusErr(resp.StatusCode(), resp.Status(), "没有找到头像"); err != nil {
+		return nil, err
+	}
+	bm, err := ui.DecodeBitmap(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("无法读取头像：%v", err)
+	}
+	return bm, nil
+}
+
 // fetchThumbnail returns the thumbnail of an asset.
 func fetchThumbnail(base, token, id string) (*ui.Bitmap, error) {
 	return fetchAssetImage(base, token, id, immichapi.AssetMediaSizeThumbnail, "缩略图")
