@@ -46,6 +46,17 @@ type photo struct {
 	failed  bool
 }
 
+// assetAlbum is an album that holds the asset of the image page: what the
+// details panel lists, and the thumbnail of its cover once it loads.
+type assetAlbum struct {
+	ID    string
+	Name  string
+	Count int
+	// Cover is the asset whose thumbnail stands for the album, or "".
+	Cover string
+	Bm    *ui.Bitmap
+}
+
 // assetDetails is what the image page's details panel tells of an asset.
 type assetDetails struct {
 	Name        string
@@ -67,6 +78,8 @@ type assetDetails struct {
 	Latitude    *float64
 	Longitude   *float64
 	Description string
+	// Albums are the albums that hold the asset.
+	Albums []assetAlbum
 	// Duration is how long a video runs, in milliseconds.
 	Duration int
 }
@@ -378,6 +391,25 @@ func fetchAssetDetails(base, token, id string) (*assetDetails, error) {
 		}
 		if h := intOf(e.ExifImageHeight); h > 0 {
 			ad.Height = h
+		}
+	}
+	// The albums that hold the asset, and their covers; a failure leaves
+	// them out rather than hiding the details.
+	if albums, err := client.GetAllAlbumsWithResponse(ctx,
+		&immichapi.GetAllAlbumsParams{AssetId: &assetID}); err == nil && albums.JSON200 != nil {
+		for _, al := range *albums.JSON200 {
+			aa := assetAlbum{ID: al.Id.String(), Name: al.AlbumName, Count: al.AssetCount}
+			if al.AlbumThumbnailAssetId != nil {
+				aa.Cover = al.AlbumThumbnailAssetId.String()
+			}
+			ad.Albums = append(ad.Albums, aa)
+		}
+	}
+	for i := range ad.Albums {
+		if cover := ad.Albums[i].Cover; cover != "" {
+			if bm, err := fetchThumbnail(base, token, cover); err == nil {
+				ad.Albums[i].Bm = bm
+			}
 		}
 	}
 	return ad, nil

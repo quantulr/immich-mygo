@@ -790,10 +790,60 @@ func (a *app) viewerDetails(c *ui.Context, v *viewer) {
 							ui.Text(c, row.value).FontSize(12.5).TextColor(ui.Hex("#ffffff"))
 						})
 					}
+					if d := v.details; d != nil && len(d.Albums) > 0 {
+						ui.Column(c).Gap(4).Children(func() {
+							ui.Text(c, "相册").FontSize(10.5).
+								TextColor(ui.RGBA(255, 255, 255, 0.45))
+							for _, al := range d.Albums {
+								a.detailAlbumRow(c, al)
+							}
+						})
+					}
 				})
 			})
 		}
 	})
+}
+
+// detailAlbumRow shows an album that holds the asset: its cover, its name
+// and how many assets it holds. A click opens the album's days.
+func (a *app) detailAlbumRow(c *ui.Context, al assetAlbum) {
+	row := ui.Row(c).Height(40).Padding(4).Gap(8).Radius(8).AlignItems(ui.Center).
+		Background(ui.RGBA(255, 255, 255, 0.04)).Cursor(ui.CursorPointer).
+		Label("打开相册 " + al.Name)
+	if row.Hovered() {
+		row.Background(ui.RGBA(255, 255, 255, 0.1))
+	}
+	row.Children(func() {
+		cover := ui.Box(c).Size(30, 30).Shrink(0).Radius(6).Clip().
+			Background(ui.RGBA(255, 255, 255, 0.1))
+		if al.Bm != nil {
+			cover.Children(func() { ui.Image(c, al.Bm).Fill().Fit(ui.Cover) })
+		} else {
+			cover.Center().Children(func() {
+				ui.Icon(c, albumsIcon).Size(14, 14).TextColor(ui.RGBA(255, 255, 255, 0.45))
+			})
+		}
+		ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
+			ui.Text(c, al.Name).FontSize(12).SingleLine().Ellipsis("…").
+				TextColor(ui.Hex("#ffffff"))
+			if al.Count > 0 {
+				ui.Text(c, fmt.Sprintf("%d 项", al.Count)).FontSize(10.5).
+					TextColor(ui.RGBA(255, 255, 255, 0.45))
+			}
+		})
+		ui.Icon(c, forwardIcon).Size(12, 12).TextColor(ui.RGBA(255, 255, 255, 0.3))
+	})
+	if row.Clicked() {
+		a.openDetailAlbum(al)
+	}
+}
+
+// openDetailAlbum shows the days of an album the image page lists, leaving
+// the photo page for it.
+func (a *app) openDetailAlbum(al assetAlbum) {
+	a.selectSection(sectionAlbums)
+	a.openAlbum(&album{ID: al.ID, Name: al.Name, Count: al.Count, Cover: al.Cover, Bm: al.Bm})
 }
 
 // viewerDetailsError tells why the details did not come, and offers to try

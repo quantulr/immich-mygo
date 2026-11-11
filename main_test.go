@@ -948,6 +948,7 @@ func TestPhotoPageDetails(t *testing.T) {
 		"镜头", "iPhone 15 Pro back camera 6.765mm f/1.78",
 		"曝光", "f/1.78 · 1/120 · ISO 100 · 6.765 mm",
 		"位置", "杭州 · 浙江 · 中国", "描述", "午后的西湖",
+		"相册", "旅行",
 	} {
 		if !tt.HasText(want) {
 			t.Errorf("texts %q do not show %q", tt.Texts(), want)
@@ -1145,6 +1146,69 @@ func TestPhotoPageDetailsMissingAsset(t *testing.T) {
 	}
 	if tt.HasText("没有找到 Immich 接口") {
 		t.Errorf("texts %q take a missing asset for a wrong address", tt.Texts())
+	}
+}
+
+// TestPhotoDetailsAlbumOpens lists the albums that hold the asset shown,
+// with their covers, and opens one's days from there.
+func TestPhotoDetailsAlbumOpens(t *testing.T) {
+	srv := timelineServer(t)
+	defer srv.Close()
+	withTestSession(t)
+
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = srv.URL
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com", Token: "token-123"}
+	a.enterMain()
+
+	tt := ui.NewTester(a.view, 1120, 720)
+	tt.Frame()
+	tt.Frame()
+	waitFor(t, "the days", func() bool {
+		f := &a.main.photos
+		return f.loaded && len(f.days) == 2 && f.days[0].loaded &&
+			len(f.days[0].photos) == 1
+	})
+	tt.Frame()
+	if err := tt.Click("照片 1"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the image", func() bool {
+		return a.main.viewer != nil && a.main.viewer.bm != nil
+	})
+	tt.Frame()
+	if err := tt.Click("详情"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the details' albums", func() bool {
+		v := a.main.viewer
+		return v != nil && v.details != nil && len(v.details.Albums) == 1 &&
+			v.details.Albums[0].Bm != nil
+	})
+	tt.Frame()
+	if !tt.HasText("相册") || !tt.HasText("旅行") || !tt.HasText("2 项") {
+		t.Errorf("texts %q do not list the album", tt.Texts())
+	}
+
+	// The album's row opens its days, leaving the photo page.
+	if err := tt.Click("打开相册 旅行"); err != nil {
+		t.Fatal(err)
+	}
+	if a.main.viewer != nil {
+		t.Error("the photo page stayed open after opening the album")
+	}
+	if a.main.section != sectionAlbums || a.main.albumOpen == nil ||
+		a.main.albumOpen.ID != testAssetID {
+		t.Fatalf("section %d, album %+v after opening it", a.main.section, a.main.albumOpen)
+	}
+	waitFor(t, "the album's day", func() bool {
+		f := &a.main.albumFeed
+		return f.loaded && len(f.days) == 1 && f.days[0].loaded
+	})
+	tt.Frame()
+	if !tt.HasText("旅行") || !tt.HasText("4月1日") {
+		t.Errorf("texts %q in the album", tt.Texts())
 	}
 }
 
