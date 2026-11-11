@@ -20,6 +20,9 @@ const sidebarWidth = 248
 // curve that lands quickly, without a spring's crawl under a pixel.
 var sidebarMotion = ui.Animation{Duration: 260 * time.Millisecond, Ease: ui.CubicBezier(0.25, 1, 0.5, 1)}
 
+// searchMotion is the quick expansion of the header's search field.
+var searchMotion = ui.Animation{Duration: 220 * time.Millisecond, Ease: ui.CubicBezier(0.25, 1, 0.5, 1)}
+
 // photoMatch is the identity a photo's thumbnail shares with its image
 // page, which tells the frames that the two are one.
 type photoMatch struct{ id string }
@@ -86,6 +89,14 @@ type feed struct {
 	list    ui.ListState
 }
 
+// searchState is the header's expandable search field.
+type searchState struct {
+	open         bool
+	query        string
+	focused      bool
+	focusPending bool
+}
+
 // mainState is the main window: the section shown, and each section's
 // content, loaded once and kept.
 type mainState struct {
@@ -108,6 +119,8 @@ type mainState struct {
 	// a load that failed, which leaves their initial in its place.
 	avatar       *ui.Bitmap
 	avatarFailed bool
+	// search is the header's expandable search field.
+	search searchState
 }
 
 func (m *mainState) current() *feed {
@@ -150,6 +163,7 @@ var (
 	// favoritesOnIcon is the heart filled, for the asset that is one.
 	favoritesOnIcon = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><path d="M8 13.1S2.6 9.8 2.6 6.2A3 3 0 0 1 8 4.3a3 3 0 0 1 5.4 1.9c0 3.6-5.4 6.9-5.4 6.9z"/></svg>`))
 	albumsIcon      = svgIcon(`<rect x="2.5" y="3.5" width="11" height="9" rx="2"/><path d="M2.5 10l3-2.4 2.4 1.9 2-1.4 3.6 2.4"/>`)
+	searchIcon      = svgIcon(`<circle cx="7.1" cy="7.1" r="4.1"/><path d="M10.2 10.2l3.3 3.3"/>`)
 	refreshIcon     = svgIcon(`<path d="M13.2 8a5.2 5.2 0 1 1-1.5-3.7"/><path d="M13.2 2.7v2.8h-2.8"/>`)
 	signOutIcon     = svgIcon(`<path d="M6.6 3H4.7A1.7 1.7 0 0 0 3 4.7v6.6A1.7 1.7 0 0 0 4.7 13h1.9"/><path d="M10.2 5.4L12.8 8l-2.6 2.6"/><path d="M6.6 8h6.2"/>`)
 	errorIcon       = svgIcon(`<circle cx="8" cy="8" r="5.6"/><path d="M8 5.2v3.4"/><path d="M8 10.9v.1"/>`)
@@ -391,6 +405,7 @@ func (a *app) cardHeader(c *ui.Context) {
 			ui.Text(c, count).FontSize(11.5).TextColor(t.TextMuted)
 		}
 		ui.Spacer(c)
+		a.searchControl(c)
 		if viewerOpen {
 			a.favoriteButton(c, viewer)
 			a.detailsButton(c, viewer.showDetails)
@@ -493,6 +508,57 @@ func (a *app) controlButtons(c *ui.Context, t *ui.Theme) {
 	if close.Clicked() && a.win != nil {
 		a.win.Close()
 	}
+}
+
+// searchControl is the header's search button: clicking the magnifying
+// glass expands it into a search field, which closes when it loses the
+// focus while empty.
+func (a *app) searchControl(c *ui.Context) {
+	s := &a.main.search
+	t := c.Theme()
+	row := ui.Row(c).Key("header-search").Height(28).Shrink(0).
+		ClipX().AlignItems(ui.Center)
+	progress := row.AnimateTo("expanded", b2f(s.open), searchMotion)
+	row.Width(28 + 192*progress).Children(func() {
+		if !s.open && progress < 0.01 {
+			b := ui.ButtonBase(c).Size(28, 26).Radius(6).Center().
+				Label("搜索").Tooltip("搜索照片")
+			if b.Pressed() {
+				b.Background(t.SurfacePressed)
+			} else if b.Hovered() {
+				b.Background(t.SurfaceHover)
+			}
+			b.Children(func() {
+				ui.Icon(c, searchIcon).Size(15, 15).TextColor(t.TextMuted)
+			})
+			if b.Clicked() {
+				s.open = true
+				s.focusPending = true
+				s.focused = false
+			}
+			return
+		}
+		field := ui.SearchField(c.Key("header-search-field"), &s.query).Grow(1).MinWidth(0).
+			Placeholder("搜索照片").Label("搜索照片").Radius(14)
+		// The field asks for the focus each frame until it has it: the
+		// frames before the click's own rebuild may build it before it
+		// exists to take it.
+		if s.focusPending {
+			if field.Focused() {
+				s.focusPending = false
+			} else {
+				field.Focus()
+			}
+		}
+		focused := field.Focused()
+		if focused {
+			s.focused = true
+		}
+		if strings.TrimSpace(s.query) == "" && s.focused && !focused {
+			s.open = false
+			s.focused = false
+		}
+	})
 }
 
 // controlButton is one of the window's own buttons: quiet, and lighting
