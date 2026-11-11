@@ -1051,6 +1051,74 @@ func TestPhotoPageDetails(t *testing.T) {
 	tt.Frame()
 }
 
+// TestPhotoDetailsRemembered keeps the details panel open for the photos
+// opened after it, and for the next run.
+func TestPhotoDetailsRemembered(t *testing.T) {
+	srv := timelineServer(t)
+	defer srv.Close()
+	withTestSession(t)
+
+	a := &app{}
+	a.login.stage = stageSignedIn
+	a.login.serverURL = srv.URL
+	a.login.user = &account{Name: "Ada", Email: "ada@example.com", Token: "token-123"}
+	a.enterMain()
+
+	tt := ui.NewTester(a.view, 1120, 720)
+	tt.Frame()
+	tt.Frame()
+	waitFor(t, "the days", func() bool {
+		f := &a.main.photos
+		return f.loaded && len(f.days) == 2 && f.days[0].loaded &&
+			len(f.days[0].photos) == 1
+	})
+	tt.Frame()
+	if err := tt.Click("照片 1"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the image", func() bool {
+		return a.main.viewer != nil && a.main.viewer.bm != nil
+	})
+	tt.Frame()
+	if err := tt.Click("详情"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the details", func() bool {
+		return a.main.viewer != nil && a.main.viewer.details != nil
+	})
+	if p, err := appPrefs.load(); err != nil || !p.DetailsOpen {
+		t.Fatalf("preferences %+v, %v after opening the details", p, err)
+	}
+
+	// Leaving the image page and coming back keeps the panel open, its
+	// details loading again.
+	tt.Key(0, ui.KeyEscape)
+	tt.Frame()
+	if a.main.viewer != nil {
+		t.Fatal("the image page stayed open after Escape")
+	}
+	if err := tt.Click("照片 1"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the image again", func() bool {
+		v := a.main.viewer
+		return v != nil && v.bm != nil && v.showDetails && v.details != nil
+	})
+	tt.Frame()
+	if !tt.HasText("关闭详情") || !tt.HasText("文件名") {
+		t.Errorf("texts %q on the image page do not show the details", tt.Texts())
+	}
+
+	// Closing the panel is what the next run shows too.
+	if err := tt.Click("关闭详情"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if p, err := appPrefs.load(); err != nil || p.DetailsOpen {
+		t.Fatalf("preferences %+v, %v after closing the details", p, err)
+	}
+}
+
 // TestPhotoPageDetailsWithoutThumbhash checks that an asset whose info
 // leaves out thumbhash, as Immich may for one it has no blur hash of, still
 // tells its details: the field is nullable, and the app does not read it.

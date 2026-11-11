@@ -189,6 +189,11 @@ func (a *app) credentials(c *ui.Context) {
 // make the system ask the user something, comes from the credential
 // store off the UI thread in restoreSession.
 func (a *app) prepareSession() {
+	if p, err := appPrefs.load(); err != nil {
+		log.Printf("loading the preferences: %v", err)
+	} else {
+		a.preferences = p
+	}
 	meta, err := sessions.loadMeta()
 	if err != nil {
 		log.Printf("loading the saved session: %v", err)

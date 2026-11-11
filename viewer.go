@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"strconv"
 	"strings"
@@ -83,7 +84,7 @@ func (a *app) openPhoto(f *feed, day, index int) {
 	if !d.loaded || index < 0 || index >= len(d.photos) {
 		return
 	}
-	a.main.viewer = &viewer{focusStage: true}
+	a.main.viewer = &viewer{focusStage: true, showDetails: a.preferences.DetailsOpen}
 	a.showViewerPhoto(f, d.key, d.photos[index].ID)
 }
 
@@ -158,6 +159,10 @@ func (a *app) toggleDetails() {
 		return
 	}
 	v.showDetails = !v.showDetails
+	a.preferences.DetailsOpen = v.showDetails
+	if err := appPrefs.save(a.preferences); err != nil {
+		log.Printf("saving the preferences: %v", err)
+	}
 	if v.showDetails && v.details == nil && v.detailsErr == nil {
 		a.loadDetails(v)
 	}

@@ -44,6 +44,8 @@ type app struct {
 	// video plays the video the image page shows, and serves it to the
 	// system's player.
 	video videoState
+	// preferences are the interface's choices that outlast a run.
+	preferences preferences
 }
 
 func (a *app) view(c *ui.Context) {

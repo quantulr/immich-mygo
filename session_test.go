@@ -170,13 +170,18 @@ func TestSessionStoreRejectsBrokenFile(t *testing.T) {
 func withTestSession(t *testing.T) (fakeSecrets, string) {
 	t.Helper()
 	old := sessions
+	oldPrefs := appPrefs
 	dir := t.TempDir()
 	secrets := fakeSecrets{}
 	sessions = sessionStore{
 		secrets: secrets,
 		dir:     func() (string, error) { return dir, nil },
 	}
-	t.Cleanup(func() { sessions = old })
+	appPrefs = prefsStore{dir: func() (string, error) { return dir, nil }}
+	t.Cleanup(func() {
+		sessions = old
+		appPrefs = oldPrefs
+	})
 	return secrets, dir
 }
 
