@@ -245,13 +245,22 @@ const (
 	searchTimeout  = 30 * time.Second
 )
 
-// searchRequest is what a search asks the server for: its words, the filter
-// conditions chosen, and whether the server searches images by meaning.
+// The ways a search reads its words: by the meaning of images the server's
+// machine learning learned, by the file names, or by the text OCR read of
+// them.
+const (
+	searchSmart = iota
+	searchFileName
+	searchOCR
+)
+
+// searchRequest is what a search asks the server for: its words, the way
+// they are searched, and the filter conditions chosen.
 type searchRequest struct {
 	text      string
+	mode      int
 	mediaType int
 	favorite  int
-	clip      bool
 }
 
 // empty tells that a search asks for nothing: no words and no condition.
@@ -294,7 +303,7 @@ func fetchSearchPage(base, token string, req searchRequest, page int) (photos []
 	}
 	typ, favorite, visibility := searchParams(req)
 	size := searchPageSize
-	if req.clip && req.text != "" {
+	if req.mode == searchSmart && req.text != "" {
 		query := req.text
 		resp, err := client.SearchSmartWithResponse(ctx, immichapi.SmartSearchDto{
 			Query:      &query,
@@ -306,6 +315,9 @@ func fetchSearchPage(base, token string, req searchRequest, page int) (photos []
 		})
 		if err != nil {
 			return nil, 0, 0, requestError(err)
+		}
+		if resp.StatusCode() == http.StatusBadRequest {
+			return nil, 0, 0, errors.New("服务器未开启智能搜索，请改用文件名或 OCR 搜索")
 		}
 		if err := statusErr(resp.StatusCode(), resp.Status(), "没有找到搜索结果，请重试"); err != nil {
 			return nil, 0, 0, err
@@ -323,7 +335,12 @@ func fetchSearchPage(base, token string, req searchRequest, page int) (photos []
 	order := immichapi.AssetOrderDesc
 	dto.Order = &order
 	if req.text != "" {
-		dto.OriginalFileName = &req.text
+		switch req.mode {
+		case searchFileName:
+			dto.OriginalFileName = &req.text
+		case searchOCR:
+			dto.Ocr = &req.text
+		}
 	}
 	resp, err := client.SearchAssetsWithResponse(ctx, &immichapi.SearchAssetsParams{}, dto)
 	if err != nil {

@@ -94,7 +94,7 @@ type feed struct {
 // DIPs.
 const (
 	searchWidth    = 280
-	searchFiltersH = 162
+	searchFiltersH = 200
 )
 
 // searchState is the header's expandable search field, and the panel of
@@ -112,9 +112,13 @@ type searchState struct {
 	filtersGrown bool
 	filtersShown bool
 	// mediaType and favorite are the filter conditions chosen: 0 for all,
-	// 1 for the first choice, and 2 for the second.
-	mediaType int
-	favorite  int
+	// 1 for the first choice, and 2 for the second. mode is the way the
+	// words are searched, and modeChosen tells that the user chose it rather
+	// than the server's machine learning deciding it.
+	mediaType  int
+	favorite   int
+	mode       int
+	modeChosen bool
 }
 
 // searchResults is the page a search opens in place of the section: what it
@@ -157,7 +161,8 @@ type mainState struct {
 	search  searchState
 	results searchResults
 	// clipEnabled tells that the server searches images by meaning, as its
-	// machine learning does; without it, a search reads file names.
+	// machine learning does; without it, a search reads file names until
+	// the user chooses another way.
 	clipEnabled bool
 }
 
@@ -667,6 +672,7 @@ func (a *app) searchFilters(c *ui.Context, anchor ui.Element) {
 					ui.Spacer(c)
 					a.clearFiltersButton(c)
 				})
+				a.searchModeRow(c)
 				a.searchFilterRow(c, "类型", &s.mediaType, "全部", "照片", "视频")
 				a.searchFilterRow(c, "收藏", &s.favorite, "全部", "已收藏", "未收藏")
 				empty := strings.TrimSpace(s.query) == "" && s.mediaType == 0 && s.favorite == 0
@@ -698,6 +704,20 @@ func (a *app) searchFilterRow(c *ui.Context, label string, selected *int, choice
 		ui.Text(c, label).Width(34).Shrink(0).FontSize(12).TextColor(c.Theme().TextMuted)
 		ui.Segmented(c, selected, choices...).Grow(1).MinWidth(0).
 			FillEqually().Label("按" + label + "筛选")
+	})
+}
+
+// searchModeRow is the way the words are searched: by the meaning of the
+// images, by their file names, or by the text OCR read of them.
+func (a *app) searchModeRow(c *ui.Context) {
+	s := &a.main.search
+	ui.Row(c).Height(28).AlignItems(ui.Center).Gap(8).Children(func() {
+		ui.Text(c, "方式").Width(34).Shrink(0).FontSize(12).TextColor(c.Theme().TextMuted)
+		seg := ui.Segmented(c, &s.mode, "智能", "文件名", "OCR").Grow(1).MinWidth(0).
+			FillEqually().Label("选择搜索方式")
+		if seg.Changed() {
+			s.modeChosen = true
+		}
 	})
 }
 
@@ -1247,8 +1267,8 @@ func (a *app) refreshSection() {
 }
 
 // runSearch searches the server for the words and filter conditions of the
-// header, and shows the results in place of the section. Without the
-// server's machine learning, the words search file names.
+// header, by the way they are read, and shows the results in place of the
+// section.
 func (a *app) runSearch() {
 	if a.login.user == nil || a.login.user.Token == "" {
 		return
@@ -1257,9 +1277,9 @@ func (a *app) runSearch() {
 	text := strings.TrimSpace(s.query)
 	req := searchRequest{
 		text:      text,
+		mode:      s.mode,
 		mediaType: s.mediaType,
 		favorite:  s.favorite,
-		clip:      a.main.clipEnabled && text != "",
 	}
 	if req.empty() {
 		return
@@ -1390,8 +1410,8 @@ func (a *app) closeSearch() {
 }
 
 // loadClipEnabled learns whether the server searches images by meaning, off
-// the UI thread. A server that does not tell leaves the search to file
-// names.
+// the UI thread, and leaves the search on that way or, without it, on file
+// names, until the user chooses one.
 func (a *app) loadClipEnabled() {
 	u := a.login.user
 	if u == nil || u.Token == "" {
@@ -1405,6 +1425,13 @@ func (a *app) loadClipEnabled() {
 				return
 			}
 			a.main.clipEnabled = err == nil && enabled
+			if s := &a.main.search; !s.modeChosen {
+				if a.main.clipEnabled {
+					s.mode = searchSmart
+				} else {
+					s.mode = searchFileName
+				}
+			}
 		})
 	}()
 }
