@@ -145,10 +145,12 @@ type searchState struct {
 	albumsTried bool
 	// albumPicker shows the albums in place of the conditions; albumQuery
 	// narrows them by name, and albumSearchPending asks the focus of its
-	// field until it has it.
+	// field until it has it. albumMulti tells that a click adds an album to
+	// the choice rather than choosing it alone.
 	albumPicker        bool
 	albumQuery         string
 	albumSearchPending bool
+	albumMulti         bool
 	mode               int
 	modeChosen         bool
 }
@@ -827,8 +829,10 @@ func (a *app) searchAlbumSelect(c *ui.Context) {
 			s.albumQuery = ""
 			s.albumSearchPending = true
 			switch {
-			case len(s.albumIDs) > 0:
+			case s.albumMulti && len(s.albumIDs) > 0:
 				s.albumPick = searchMultiAlbum
+			case len(s.albumIDs) > 0:
+				s.albumPick = s.albumIDs[0]
 			case s.noAlbum:
 				s.albumPick = searchNoAlbum
 			default:
@@ -860,15 +864,17 @@ func (a *app) searchAlbumItem(c *ui.Context, sel ui.SelectParts[string], value, 
 }
 
 // searchAlbumPicker shows the albums in the panel in place of the
-// conditions, each with its cover and a check when chosen, and a field
-// that narrows them by name. A click chooses an album, or lets it go, as
-// the choice is as many albums as the user wants.
+// conditions, each with its cover and a check when chosen, a field that
+// narrows them by name, and a switch between choosing one album and
+// choosing several. A click chooses the album alone and returns to the
+// conditions, or adds it to the choice or takes it out when the switch is
+// on.
 func (a *app) searchAlbumPicker(c *ui.Context) {
 	s := &a.main.search
 	t := c.Theme()
 	well, pill, _, hover, press := glassControlFaces(t)
 	ui.Column(c).Gap(10).Padding(12).Fill().Children(func() {
-		ui.Row(c).Height(18).AlignItems(ui.Center).Gap(6).Children(func() {
+		ui.Row(c).Height(20).AlignItems(ui.Center).Gap(6).Children(func() {
 			back := ui.ButtonBase(c).Size(18, 18).Radius(4).Label("返回筛选条件")
 			if back.Pressed() {
 				back.Background(press)
@@ -898,6 +904,24 @@ func (a *app) searchAlbumPicker(c *ui.Context) {
 					s.albumIDs, s.noAlbum, s.albumName, s.albumPick = nil, false, "", ""
 				}
 			}
+			ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "多选").FontSize(12).TextColor(t.Text.Alpha(0.7))
+				multi := ui.Switch(c.Key("search-album-multi"), &s.albumMulti).Label("多选相册")
+				if multi.Changed() {
+					switch {
+					case !s.albumMulti && len(s.albumIDs) > 1:
+						// Single-select keeps the album chosen last.
+						last := s.albumIDs[len(s.albumIDs)-1]
+						s.albumIDs = []string{last}
+						s.albumName = a.albumNameOf(last)
+						s.albumPick = last
+					case !s.albumMulti && len(s.albumIDs) == 1:
+						s.albumPick = s.albumIDs[0]
+					case s.albumMulti && len(s.albumIDs) > 0:
+						s.albumPick = searchMultiAlbum
+					}
+				}
+			})
 		})
 		field := ui.SearchField(c.Key("search-album-field"), &s.albumQuery).
 			Height(28).Radius(t.Space(2)).Background(well).Border(0, ui.Transparent).
@@ -934,8 +958,8 @@ func (a *app) searchAlbumPicker(c *ui.Context) {
 }
 
 // searchAlbumChoice is one album of the picker: its cover, its name, and
-// the check of the ones chosen. A click adds it to the choice, or takes it
-// out.
+// the check of the ones chosen. A click chooses it alone, and closes the
+// picker, or with multi-select adds it to the choice, or takes it out.
 func (a *app) searchAlbumChoice(c *ui.Context, al *album, pill, hover, press ui.Color) {
 	s := &a.main.search
 	t := c.Theme()
@@ -969,6 +993,17 @@ func (a *app) searchAlbumChoice(c *ui.Context, al *album, pill, hover, press ui.
 		}
 	})
 	if row.Clicked() {
+		if !s.albumMulti {
+			s.albumIDs = []string{al.ID}
+			s.albumName = al.Name
+			s.noAlbum = false
+			s.albumPick = al.ID
+			s.albumPicker = false
+			s.albumQuery = ""
+			s.albumSearchPending = false
+			c.After(0)
+			return
+		}
 		if i := slices.Index(s.albumIDs, al.ID); i >= 0 {
 			s.albumIDs = slices.Delete(s.albumIDs, i, i+1)
 		} else {
@@ -977,12 +1012,7 @@ func (a *app) searchAlbumChoice(c *ui.Context, al *album, pill, hover, press ui.
 		}
 		s.albumName = ""
 		if len(s.albumIDs) == 1 {
-			for _, chosen := range a.main.albums.albums {
-				if chosen.ID == s.albumIDs[0] {
-					s.albumName = chosen.Name
-					break
-				}
-			}
+			s.albumName = a.albumNameOf(s.albumIDs[0])
 		}
 		switch {
 		case len(s.albumIDs) > 0:
@@ -993,6 +1023,16 @@ func (a *app) searchAlbumChoice(c *ui.Context, al *album, pill, hover, press ui.
 			s.albumPick = ""
 		}
 	}
+}
+
+// albumNameOf returns the name of the album the feed holds, or "".
+func (a *app) albumNameOf(id string) string {
+	for _, al := range a.main.albums.albums {
+		if al.ID == id {
+			return al.Name
+		}
+	}
+	return ""
 }
 
 // filteredAlbums returns the albums that the picker offers: those whose
