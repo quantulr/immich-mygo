@@ -249,6 +249,7 @@ var (
 	forwardIcon     = svgIcon(`<path d="M6.2 3.5L10.7 8l-4.5 4.5"/><path d="M10.5 8h-7"/>`)
 	chevronDownIcon = svgIcon(`<path d="M4.2 6.3L8 10l3.8-3.7"/>`)
 	checkIcon       = svgIcon(`<path d="M3.3 8.4l3.1 3.1 6.3-7"/>`)
+	copyIcon        = svgIcon(`<rect x="5.8" y="5.8" width="7.4" height="7.4" rx="1.3"/><path d="M4.6 10.2H4.1A1.5 1.5 0 0 1 2.6 8.7V4.1A1.5 1.5 0 0 1 4.1 2.6h4.6a1.5 1.5 0 0 1 1.5 1.5v.5"/>`)
 	minusIcon       = svgIcon(`<path d="M4 8h8"/>`)
 	plusIcon        = svgIcon(`<path d="M8 4v8"/><path d="M4 8h8"/>`)
 	infoIcon        = svgIcon(`<circle cx="8" cy="8" r="5.6"/><path d="M8 7.2v3.4"/><path d="M8 4.9v.1"/>`)

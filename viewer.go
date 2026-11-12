@@ -898,6 +898,14 @@ func (a *app) viewerDetails(c *ui.Context, v *viewer) {
 						ui.Column(c).Gap(2).Children(func() {
 							ui.Text(c, row.label).FontSize(10.5).
 								TextColor(ui.RGBA(255, 255, 255, 0.55))
+							if row.copyable {
+								ui.Row(c).Gap(4).AlignItems(ui.Start).Children(func() {
+									ui.Text(c, row.value).Grow(1).MinWidth(0).
+										FontSize(12.5).TextColor(ui.Hex("#ffffff"))
+									a.detailCopyButton(c, row.value)
+								})
+								return
+							}
 							ui.Text(c, row.value).FontSize(12.5).TextColor(ui.Hex("#ffffff"))
 						})
 					}
@@ -914,6 +922,27 @@ func (a *app) viewerDetails(c *ui.Context, v *viewer) {
 			})
 		}
 	})
+}
+
+// detailCopyButton copies a value of the details panel, as the file's name,
+// to the clipboard.
+func (a *app) detailCopyButton(c *ui.Context, value string) {
+	b := ui.ButtonBase(c).Size(18, 18).Shrink(0).Radius(4).Center().
+		Label("复制文件名").Tooltip("复制文件名")
+	if b.Pressed() {
+		b.Background(ui.RGBA(255, 255, 255, 0.2))
+	} else if b.Hovered() {
+		b.Background(ui.RGBA(255, 255, 255, 0.12))
+	}
+	fg := ui.RGBA(255, 255, 255, 0.55)
+	if b.Hovered() {
+		fg = ui.RGBA(255, 255, 255, 0.85)
+	}
+	b.Children(func() { ui.Icon(c, copyIcon).Size(12, 12).TextColor(fg) })
+	if b.Clicked() {
+		c.WriteClipboard(value)
+		c.Toast("已复制文件名")
+	}
 }
 
 // detailAlbumRow shows an album that holds the asset: its cover, its name
@@ -977,6 +1006,9 @@ func (a *app) viewerDetailsError(c *ui.Context, v *viewer) {
 type detailRow struct {
 	label string
 	value string
+	// copyable tells that the panel offers the value for copying, as it
+	// does a file's name.
+	copyable bool
 }
 
 // detailRows is what the details panel tells of the asset shown, left out
@@ -992,7 +1024,9 @@ func (v *viewer) detailRows() []detailRow {
 			rows = append(rows, detailRow{label: label, value: value})
 		}
 	}
-	add("文件名", d.Name)
+	if d.Name != "" {
+		rows = append(rows, detailRow{label: "文件名", value: d.Name, copyable: true})
+	}
 	if !d.Taken.IsZero() {
 		taken := d.Taken.Format("2006年1月2日 15:04")
 		if d.TimeZone != "" {
