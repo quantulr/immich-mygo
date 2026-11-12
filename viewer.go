@@ -1164,9 +1164,13 @@ func (a *app) viewerLiveMark(c *ui.Context) {
 	})
 }
 
-// viewerCaption is the day of the photo shown, as the page's header says it.
+// viewerCaption is the day of the photo shown, as the page's header says it;
+// a photo of the search results names the search instead.
 func (a *app) viewerCaption() (title, week string) {
 	if v := a.main.viewer; v != nil {
+		if v.feed == &a.main.results.feed {
+			return "搜索", ""
+		}
 		return bucketTitle(v.dayKey, time.Now())
 	}
 	return "", ""

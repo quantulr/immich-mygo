@@ -246,8 +246,15 @@ func logoutImmich(base, token string) {
 // returned, with the request timeout. A token, when not empty, goes in
 // the Authorization header of every request.
 func immichClient(base, token string) (*immichapi.ClientWithResponses, error) {
+	return immichClientTimeout(base, token, requestTimeout)
+}
+
+// immichClientTimeout is immichClient with a timeout of its own, for the
+// requests that may outlast a check: a search that the server reads its
+// images for.
+func immichClientTimeout(base, token string, timeout time.Duration) (*immichapi.ClientWithResponses, error) {
 	opts := []immichapi.ClientOption{
-		immichapi.WithHTTPClient(&http.Client{Timeout: requestTimeout}),
+		immichapi.WithHTTPClient(&http.Client{Timeout: timeout}),
 	}
 	if token != "" {
 		opts = append(opts, immichapi.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -233,6 +235,177 @@ func fetchBucket(ctx context.Context, client *immichapi.ClientWithResponses, buc
 		photos = append(photos, p)
 	}
 	return photos, nil
+}
+
+// searchPageSize is how many results a search asks for at a time, and
+// searchTimeout how long it may wait: a server that reads its images to
+// search them takes longer than a check allows.
+const (
+	searchPageSize = 100
+	searchTimeout  = 30 * time.Second
+)
+
+// searchRequest is what a search asks the server for: its words, the filter
+// conditions chosen, and whether the server searches images by meaning.
+type searchRequest struct {
+	text      string
+	mediaType int
+	favorite  int
+	clip      bool
+}
+
+// empty tells that a search asks for nothing: no words and no condition.
+func (r searchRequest) empty() bool {
+	return strings.TrimSpace(r.text) == "" && r.mediaType == 0 && r.favorite == 0
+}
+
+// fetchClipEnabled tells whether the server searches images by meaning, as
+// its machine learning does; without it, a search reads file names.
+func fetchClipEnabled(base, token string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	client, err := immichClient(base, token)
+	if err != nil {
+		return false, err
+	}
+	resp, err := client.GetUserConfigWithResponse(ctx)
+	if err != nil {
+		return false, requestError(err)
+	}
+	if err := statusErr(resp.StatusCode(), resp.Status(), "无法读取服务器配置"); err != nil {
+		return false, err
+	}
+	if resp.JSON200 == nil {
+		return false, errors.New("服务器没有返回配置")
+	}
+	return resp.JSON200.MachineLearning.Clip.Enabled, nil
+}
+
+// fetchSearchPage returns a page of the results of a search, page 1 first,
+// with how many assets matched in all and the page after it, 0 at the end.
+func fetchSearchPage(base, token string, req searchRequest, page int) (photos []*photo, total, next int, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), searchTimeout)
+	defer cancel()
+
+	client, err := immichClientTimeout(base, token, searchTimeout)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	typ, favorite, visibility := searchParams(req)
+	size := searchPageSize
+	if req.clip && req.text != "" {
+		query := req.text
+		resp, err := client.SearchSmartWithResponse(ctx, immichapi.SmartSearchDto{
+			Query:      &query,
+			Page:       &page,
+			Size:       &size,
+			Type:       typ,
+			IsFavorite: favorite,
+			Visibility: visibility,
+		})
+		if err != nil {
+			return nil, 0, 0, requestError(err)
+		}
+		if err := statusErr(resp.StatusCode(), resp.Status(), "没有找到搜索结果，请重试"); err != nil {
+			return nil, 0, 0, err
+		}
+		return searchPageAssets(resp.JSON200)
+	}
+
+	dto := immichapi.MetadataSearchDto{
+		Page:       &page,
+		Size:       &size,
+		Type:       typ,
+		IsFavorite: favorite,
+		Visibility: visibility,
+	}
+	order := immichapi.AssetOrderDesc
+	dto.Order = &order
+	if req.text != "" {
+		dto.OriginalFileName = &req.text
+	}
+	resp, err := client.SearchAssetsWithResponse(ctx, &immichapi.SearchAssetsParams{}, dto)
+	if err != nil {
+		return nil, 0, 0, requestError(err)
+	}
+	if err := statusErr(resp.StatusCode(), resp.Status(), "没有找到搜索结果，请重试"); err != nil {
+		return nil, 0, 0, err
+	}
+	return searchPageAssets(resp.JSON200)
+}
+
+// searchParams is what a search asks beside its words: an asset type and a
+// favorite mark, both left out when the condition is all, and the timeline's
+// visibility.
+func searchParams(req searchRequest) (typ *immichapi.AssetTypeEnum, favorite *bool, visibility *immichapi.AssetVisibility) {
+	switch req.mediaType {
+	case 1:
+		t := immichapi.IMAGE
+		typ = &t
+	case 2:
+		t := immichapi.VIDEO
+		typ = &t
+	}
+	switch req.favorite {
+	case 1:
+		f := true
+		favorite = &f
+	case 2:
+		f := false
+		favorite = &f
+	}
+	visible := immichapi.Timeline
+	return typ, favorite, &visible
+}
+
+// searchPageAssets turns a page of the server's search into the photos of
+// the timeline, and reads where the page after it begins.
+func searchPageAssets(dto *immichapi.SearchResponseDto) (photos []*photo, total, next int, err error) {
+	if dto == nil {
+		return nil, 0, 0, errors.New("服务器没有返回搜索结果")
+	}
+	assets := dto.Assets
+	photos = make([]*photo, 0, len(assets.Items))
+	for _, d := range assets.Items {
+		p := &photo{
+			ID:       d.Id.String(),
+			Video:    d.Type == immichapi.VIDEO,
+			Favorite: d.IsFavorite,
+			Duration: intOf(d.Duration),
+		}
+		if id := stringOf(d.LivePhotoVideoId); id != "" {
+			p.Live = true
+			p.LiveVideo = id
+		}
+		photos = append(photos, p)
+	}
+	if assets.NextPage != nil {
+		if n, err := strconv.Atoi(*assets.NextPage); err == nil && n > 0 {
+			next = n
+		}
+	}
+	return photos, assets.Total, next, nil
+}
+
+// appendSearchPhotos appends the photos of the next page that the results do
+// not hold yet, and tells how many it added: a page that adds none repeats
+// the ones shown, and ends the search.
+func appendSearchPhotos(d *timelineDay, photos []*photo) int {
+	seen := make(map[string]struct{}, len(d.photos))
+	for _, p := range d.photos {
+		seen[p.ID] = struct{}{}
+	}
+	added := 0
+	for _, p := range photos {
+		if _, ok := seen[p.ID]; ok {
+			continue
+		}
+		seen[p.ID] = struct{}{}
+		d.photos = append(d.photos, p)
+		added++
+	}
+	return added
 }
 
 // fetchAlbums returns the user's albums, those whose newest asset is the

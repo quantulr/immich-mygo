@@ -94,7 +94,7 @@ type feed struct {
 // DIPs.
 const (
 	searchWidth    = 280
-	searchFiltersH = 120
+	searchFiltersH = 162
 )
 
 // searchState is the header's expandable search field, and the panel of
@@ -105,13 +105,29 @@ type searchState struct {
 	focused      bool
 	focusPending bool
 	// filtersOpen shows the filter panel; filtersGrown tells that its first
-	// frame passed, so that it grows downward from nothing.
+	// frame passed, so that it grows downward from nothing. filtersShown
+	// tells that this widening opened it once, so that a search submitted
+	// from it does not open it again.
 	filtersOpen  bool
 	filtersGrown bool
+	filtersShown bool
 	// mediaType and favorite are the filter conditions chosen: 0 for all,
 	// 1 for the first choice, and 2 for the second.
 	mediaType int
 	favorite  int
+}
+
+// searchResults is the page a search opens in place of the section: what it
+// asked for, its photos as one loaded day the image page walks, and how its
+// pages loaded.
+type searchResults struct {
+	open     bool
+	request  searchRequest
+	feed     feed
+	total    int
+	nextPage int
+	more     bool
+	moreErr  error
 }
 
 // mainState is the main window: the section shown, and each section's
@@ -136,8 +152,13 @@ type mainState struct {
 	// a load that failed, which leaves their initial in its place.
 	avatar       *ui.Bitmap
 	avatarFailed bool
-	// search is the header's expandable search field.
-	search searchState
+	// search is the header's expandable search field, and results the page
+	// its searches open.
+	search  searchState
+	results searchResults
+	// clipEnabled tells that the server searches images by meaning, as its
+	// machine learning does; without it, a search reads file names.
+	clipEnabled bool
 }
 
 func (m *mainState) current() *feed {
@@ -389,8 +410,9 @@ func (a *app) cardHeader(c *ui.Context) {
 	pad := 18 + 34*(1-p)
 	viewer := a.main.viewer
 	viewerOpen := viewer != nil
+	resultsOpen := !viewerOpen && a.main.results.open
 	album := a.main.albumOpen
-	albumOpen := !viewerOpen && a.main.section == sectionAlbums && album != nil
+	albumOpen := !viewerOpen && !resultsOpen && a.main.section == sectionAlbums && album != nil
 	h := ui.Row(c).Height(headerH).Shrink(0).Padding(0, 12, 0, pad).Gap(8).AlignItems(ui.Center).DragWindow()
 	h.Children(func() {
 		if p < 0.5 {
@@ -403,13 +425,23 @@ func (a *app) cardHeader(c *ui.Context) {
 		var week, count string
 		switch {
 		case viewerOpen:
-			a.iconButton(c, backIcon, "返回时间线", a.closeViewer)
+			back := "返回时间线"
+			if viewer.feed == &a.main.results.feed {
+				back = "返回搜索结果"
+			}
+			a.iconButton(c, backIcon, back, a.closeViewer)
 			title, week = a.viewerCaption()
 			count = a.viewerCounter()
 		case albumOpen:
 			a.iconButton(c, backIcon, "返回相册", a.closeAlbum)
 			title = album.Name
 			if n := a.albumCount(); n > 0 {
+				count = fmt.Sprintf("%d 项", n)
+			}
+		case resultsOpen:
+			a.iconButton(c, backIcon, "返回", a.closeSearch)
+			title = "搜索"
+			if n := a.main.results.total; n > 0 {
 				count = fmt.Sprintf("%d 项", n)
 			}
 		}
@@ -427,7 +459,11 @@ func (a *app) cardHeader(c *ui.Context) {
 			a.favoriteButton(c, viewer)
 			a.detailsButton(c, viewer.showDetails)
 		} else {
-			a.iconButton(c, refreshIcon, "刷新", a.refreshSection)
+			refresh := a.refreshSection
+			if a.main.results.open {
+				refresh = a.refreshSearch
+			}
+			a.iconButton(c, refreshIcon, "刷新", refresh)
 		}
 		if ownControls {
 			ui.Box(c).Width(controlsW + 6)
@@ -572,17 +608,32 @@ func (a *app) searchControl(c *ui.Context) {
 		if focused {
 			s.focused = true
 		}
-		if strings.TrimSpace(s.query) == "" && s.focused && !focused && !s.filtersOpen {
+		if strings.TrimSpace(s.query) == "" && s.focused && !focused && !s.filtersOpen &&
+			!a.main.results.open {
 			s.open = false
 			s.focused = false
 		}
+		// The results keep the field, and a press in it brings the filter
+		// conditions back, as the search bar of a page offers them.
+		if a.main.results.open && !s.filtersOpen && field.PressedInside() {
+			s.filtersOpen = true
+			s.filtersShown = true
+			s.filtersGrown = false
+			c.After(0)
+		}
+		if field.Submitted() {
+			a.runSearch()
+		}
 	})
 	// The filter panel comes once the field has widened, and grows downward
-	// from its first frame.
+	// from its first frame. A search submitted from the panel leaves it
+	// closed for the rest of this widening.
 	if !s.open {
 		s.filtersOpen = false
-	} else if !s.filtersOpen && progress > 0.999 {
+		s.filtersShown = false
+	} else if !s.filtersOpen && !s.filtersShown && progress > 0.999 {
 		s.filtersOpen = true
+		s.filtersShown = true
 		s.filtersGrown = false
 		c.After(0)
 	}
@@ -590,8 +641,9 @@ func (a *app) searchControl(c *ui.Context) {
 }
 
 // searchFilters is the panel of filter conditions below the search field. It
-// opens once the field has widened, grows downward, and closes with the
-// whole search when pressed outside or dismissed with Escape.
+// opens once the field has widened, grows downward, and closes when pressed
+// outside or dismissed with Escape: with the whole search, unless the
+// results keep the field.
 func (a *app) searchFilters(c *ui.Context, anchor ui.Element) {
 	s := &a.main.search
 	if !s.filtersOpen {
@@ -617,6 +669,10 @@ func (a *app) searchFilters(c *ui.Context, anchor ui.Element) {
 				})
 				a.searchFilterRow(c, "类型", &s.mediaType, "全部", "照片", "视频")
 				a.searchFilterRow(c, "收藏", &s.favorite, "全部", "已收藏", "未收藏")
+				empty := strings.TrimSpace(s.query) == "" && s.mediaType == 0 && s.favorite == 0
+				ui.Row(c).Height(30).Children(func() {
+					ui.PrimaryButton(c, "搜索").Fill().Disabled(empty).OnClick(a.runSearch)
+				})
 			})
 		})
 		if !s.filtersGrown {
@@ -625,9 +681,14 @@ func (a *app) searchFilters(c *ui.Context, anchor ui.Element) {
 		}
 	})
 	if panel.Dismissed() {
-		s.open = false
-		s.focused = false
 		s.filtersOpen = false
+		// The results keep the search field, which the page's back button
+		// closes instead.
+		if !a.main.results.open {
+			s.open = false
+			s.focused = false
+			s.focusPending = false
+		}
 	}
 }
 
@@ -686,6 +747,10 @@ func (a *app) cardBody(c *ui.Context) {
 		}
 		ui.Box(c.Key("card-section")).Absolute().Fill().
 			Transition(photoStageFlight).Children(func() {
+			if a.main.results.open {
+				a.searchPage(c)
+				return
+			}
 			a.sectionBody(c)
 		})
 	})
@@ -799,6 +864,88 @@ func (a *app) timeline(c *ui.Context, f *feed) {
 		})
 	}).Grow(1).Padding(12)
 	a.loadShownDays(f, starts)
+}
+
+// searchPage shows the results of the header's search: a grid of what
+// matched, more pages coming as it scrolls to its end.
+func (a *app) searchPage(c *ui.Context) {
+	r := &a.main.results
+	f := &r.feed
+	switch {
+	case f.err != nil:
+		title, action, fn := "搜索失败", "重试", a.refreshSearch
+		if errors.Is(f.err, errSessionExpired) {
+			title, action, fn = "登录已过期", "重新登录", a.signOut
+		}
+		a.emptyState(c, errorIcon, title, f.err.Error(), action, fn)
+	case !f.loaded:
+		a.loadingState(c)
+	case len(f.days) == 0 || len(f.days[0].photos) == 0:
+		a.emptyState(c, searchIcon, "没有找到结果", "试试其他关键词，或调整筛选条件。", "返回", a.closeSearch)
+	default:
+		a.searchGrid(c, f)
+	}
+}
+
+// searchGrid shows the results in the rows the card fits, with a footer for
+// the pages still to come.
+func (a *app) searchGrid(c *ui.Context, f *feed) {
+	r := &a.main.results
+	cols := a.timelineCols(c)
+	d := f.days[0]
+	n := len(d.photos)
+	rows := (n + cols - 1) / cols
+	footer := r.nextPage > 0 || r.more || r.moreErr != nil
+	if footer {
+		rows++
+	}
+	ui.List(c, &f.list, rows, func(row int) {
+		if footer && row == rows-1 {
+			a.searchFooter(c)
+			return
+		}
+		from := row * cols
+		to := min(from+cols, n)
+		ui.Grid(c).Columns(cols).Gap(photoGap).Margin(0, 0, photoGap, 0).Children(func() {
+			for j := from; j < to; j++ {
+				a.photoTile(c, f, 0, d, j)
+			}
+		})
+	}).Grow(1).Padding(12)
+	a.loadSearchMoreIfNeeded()
+}
+
+// searchFooter is the last row of the results: a page on its way, or one
+// that failed and asks for another try.
+func (a *app) searchFooter(c *ui.Context) {
+	r := &a.main.results
+	t := c.Theme()
+	row := ui.Row(c).Height(40).Center().Gap(8)
+	row.Children(func() {
+		switch {
+		case r.moreErr != nil:
+			ui.Text(c, "加载更多失败，点击重试").FontSize(11.5).TextColor(t.Danger)
+		case r.more:
+			ui.Spinner(c).Size(14, 14).Label("正在加载更多")
+			ui.Text(c, "正在加载更多…").FontSize(11.5).TextColor(t.TextMuted)
+		}
+	})
+	if r.moreErr != nil && row.Clicked() {
+		r.moreErr = nil
+		a.loadSearchPage(r.nextPage)
+	}
+}
+
+// loadSearchMoreIfNeeded loads the page after the results as the list shows
+// their end, until it has more than the card or the server has no more.
+func (a *app) loadSearchMoreIfNeeded() {
+	r := &a.main.results
+	if !r.feed.loaded || r.nextPage == 0 || r.more || r.moreErr != nil {
+		return
+	}
+	if r.feed.list.AtEnd() {
+		a.loadSearchPage(r.nextPage)
+	}
 }
 
 // timelineRowKey tells the rows of the timeline apart: the day they show,
@@ -1056,12 +1203,19 @@ func (a *app) selectSection(s section) {
 			a.closeViewer()
 			return
 		}
+		if a.main.results.open {
+			a.closeSearch()
+			return
+		}
 		if s == sectionAlbums && a.main.albumOpen != nil {
 			a.closeAlbum()
 		}
 		return
 	}
 	a.closeViewer()
+	if a.main.results.open {
+		a.closeSearch()
+	}
 	if s != sectionAlbums {
 		a.main.albumOpen = nil
 	}
@@ -1092,6 +1246,169 @@ func (a *app) refreshSection() {
 	a.loadTimeline(f)
 }
 
+// runSearch searches the server for the words and filter conditions of the
+// header, and shows the results in place of the section. Without the
+// server's machine learning, the words search file names.
+func (a *app) runSearch() {
+	if a.login.user == nil || a.login.user.Token == "" {
+		return
+	}
+	s := &a.main.search
+	text := strings.TrimSpace(s.query)
+	req := searchRequest{
+		text:      text,
+		mediaType: s.mediaType,
+		favorite:  s.favorite,
+		clip:      a.main.clipEnabled && text != "",
+	}
+	if req.empty() {
+		return
+	}
+	a.closeViewer()
+	s.filtersOpen = false
+	s.filtersShown = true
+	r := &a.main.results
+	// The loads of the last search go on numbering, so that one finishing
+	// late is not taken for the new search's.
+	attempt := r.feed.attempt
+	r.feed = feed{
+		attempt: attempt,
+		// A search of favorites marks no tile, as the favorites page does.
+		source: timelineSource{favorites: req.favorite == 1},
+	}
+	r.open = true
+	r.request = req
+	r.total = 0
+	r.nextPage = 0
+	r.more = false
+	r.moreErr = nil
+	a.loadSearchPage(1)
+}
+
+// loadSearchPage loads one page of the results off the UI thread, the
+// first or the one after those shown, publishing it through app.update.
+func (a *app) loadSearchPage(page int) {
+	r := &a.main.results
+	f := &r.feed
+	if !r.open || a.login.user == nil || a.login.user.Token == "" {
+		return
+	}
+	if page <= 1 {
+		if f.loading {
+			return
+		}
+		f.loading = true
+		f.loaded = false
+		f.err = nil
+		f.attempt++
+	} else {
+		if r.more || r.nextPage == 0 {
+			return
+		}
+		r.more = true
+		r.moreErr = nil
+	}
+	attempt := f.attempt
+	base, token, req := a.login.serverURL, a.login.user.Token, r.request
+	go func() {
+		photos, total, next, err := fetchSearchPage(base, token, req, page)
+		a.update(func() {
+			if attempt != f.attempt || !r.open {
+				return
+			}
+			if page <= 1 {
+				f.loading = false
+				if err != nil {
+					f.err = err
+					return
+				}
+				f.loaded = true
+				f.days = []*timelineDay{{
+					key: "search", loaded: true, photos: photos, count: len(photos),
+				}}
+				r.total = total
+				r.nextPage = next
+				return
+			}
+			r.more = false
+			if err != nil {
+				r.moreErr = err
+				if errors.Is(err, errSessionExpired) {
+					f.err = err
+				}
+				return
+			}
+			if len(f.days) == 0 {
+				return
+			}
+			d := f.days[0]
+			if appendSearchPhotos(d, photos) == 0 {
+				r.nextPage = 0
+				return
+			}
+			d.count = len(d.photos)
+			r.total = total
+			r.nextPage = next
+		})
+	}()
+}
+
+// refreshSearch loads the results of the search shown again, from its
+// first page.
+func (a *app) refreshSearch() {
+	r := &a.main.results
+	if !r.open || r.feed.loading {
+		return
+	}
+	attempt := r.feed.attempt
+	r.feed = feed{
+		attempt: attempt,
+		source:  timelineSource{favorites: r.request.favorite == 1},
+	}
+	r.total = 0
+	r.nextPage = 0
+	r.more = false
+	r.moreErr = nil
+	a.loadSearchPage(1)
+}
+
+// closeSearch leaves the results, folding the search field; the words and
+// conditions wait for the next search.
+func (a *app) closeSearch() {
+	a.closeViewer()
+	r := &a.main.results
+	r.open = false
+	// The loads of the results go on numbering, so that one finishing after
+	// they closed publishes nothing.
+	r.feed = feed{attempt: r.feed.attempt + 1}
+	s := &a.main.search
+	s.open = false
+	s.focused = false
+	s.focusPending = false
+	s.filtersOpen = false
+	s.filtersShown = false
+}
+
+// loadClipEnabled learns whether the server searches images by meaning, off
+// the UI thread. A server that does not tell leaves the search to file
+// names.
+func (a *app) loadClipEnabled() {
+	u := a.login.user
+	if u == nil || u.Token == "" {
+		return
+	}
+	base, token := a.login.serverURL, u.Token
+	go func() {
+		enabled, err := fetchClipEnabled(base, token)
+		a.update(func() {
+			if u := a.login.user; u == nil || u.Token != token {
+				return
+			}
+			a.main.clipEnabled = err == nil && enabled
+		})
+	}()
+}
+
 // enterMain shows the main window after a login, with the photos of the
 // server, growing the window from the login card's size.
 func (a *app) enterMain() {
@@ -1105,6 +1422,7 @@ func (a *app) enterMain() {
 		}
 	}
 	a.loadTimeline(&a.main.photos)
+	a.loadClipEnabled()
 	a.loadAvatar()
 }
 
