@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -18,11 +19,13 @@ const (
 	viewerPad     = 20
 	maxViewerZoom = 6
 	zoomStep      = 1.25
-	// detailsW is the width of the details panel, in DIPs, and detailsSlide
-	// how long it takes to slide in or out, the photo making room as it
-	// goes.
-	detailsW     = 300
-	detailsSlide = 200 * time.Millisecond
+	// detailsW is the width of the details panel, in DIPs, detailsMargin how
+	// far it stands from the stage's top, bottom and right edges, and
+	// detailsSlide how long it takes to slide in or out, the photo making
+	// room as it goes.
+	detailsW      = 300
+	detailsMargin = 12
+	detailsSlide  = 200 * time.Millisecond
 	// livePressDelay is how long a press on a live photo's still lasts
 	// before its motion plays, and livePressSlop how far it may wander
 	// before the press is a drag.
@@ -350,12 +353,12 @@ func (a *app) photoPage(c *ui.Context, v *viewer) {
 	// The stage's box, from the frame it last showed in: what the zoom
 	// lays the photo out in.
 	bounds := stage.Bounds()
-	// The details panel stands over the stage's right side; what it covers
-	// does not zoom. It slides in and out, and the photo makes room as it
-	// goes.
+	// The details panel stands over the stage's right side, clear of its
+	// edges; what it covers does not zoom. It slides in and out, and the
+	// photo makes room as it goes.
 	panelTarget := float32(0)
 	if v.showDetails {
-		panelTarget = detailsW
+		panelTarget = detailsW + detailsMargin
 	}
 	panel := stage.Animate("details-panel", panelTarget, detailsSlide)
 	// The photo lays out left of the panel while it is out.
@@ -842,18 +845,26 @@ func (a *app) detailsButton(c *ui.Context, open bool) {
 	}
 }
 
+// detailsTheme is the theme the details panel builds with: dark whatever
+// the window's, as it stands on the dark image page, and white text over a
+// light pane would wash out.
+var detailsTheme = ui.DarkTheme()
+
 // viewerDetails is the panel at the stage's right: what the asset says of
-// itself, from its name and time to its camera and place. It slides in from
-// the right edge as it shows and back out as it goes.
+// itself, from its name and time to its camera and place. It is a pane of
+// dark liquid glass, its corners round and its edges clear of the stage's,
+// over the photo; it slides in from the right edge as it shows and back out
+// as it goes.
 func (a *app) viewerDetails(c *ui.Context, v *viewer) {
-	ui.Column(c).Key("viewer-details").Absolute().Right(0).Top(0).Bottom(0).Width(detailsW).
-		Background(ui.RGBA(13, 14, 18, 0.96)).
-		Border(1, ui.RGBA(255, 255, 255, 0.08)).BorderWidth(0, 0, 0, 1).
+	ui.Themed(c, detailsTheme).Key("viewer-details").Absolute().
+		Right(detailsMargin).Top(detailsMargin).Bottom(detailsMargin).Width(detailsW).
+		Radius(16).
+		Material(glass.Glass{Tint: ui.RGBA(13, 14, 18, 0.5)}).
 		Padding(16, 16, 12, 16).
 		Transition(ui.ElementTransition{
 			Duration: detailsSlide,
-			Enter:    &ui.Motion{XPercent: 100, Opacity: 1},
-			Exit:     &ui.Motion{XPercent: 100, Opacity: 1},
+			Enter:    &ui.Motion{XPercent: 100, X: detailsMargin, Opacity: 1},
+			Exit:     &ui.Motion{XPercent: 100, X: detailsMargin, Opacity: 1},
 		}).Children(func() {
 		ui.Row(c).Height(26).Shrink(0).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "详情").FontSize(13.5).FontWeight(600).TextColor(ui.Hex("#ffffff"))
@@ -886,14 +897,14 @@ func (a *app) viewerDetails(c *ui.Context, v *viewer) {
 					for _, row := range v.detailRows() {
 						ui.Column(c).Gap(2).Children(func() {
 							ui.Text(c, row.label).FontSize(10.5).
-								TextColor(ui.RGBA(255, 255, 255, 0.45))
+								TextColor(ui.RGBA(255, 255, 255, 0.55))
 							ui.Text(c, row.value).FontSize(12.5).TextColor(ui.Hex("#ffffff"))
 						})
 					}
 					if d := v.details; d != nil && len(d.Albums) > 0 {
 						ui.Column(c).Gap(4).Children(func() {
 							ui.Text(c, "相册").FontSize(10.5).
-								TextColor(ui.RGBA(255, 255, 255, 0.45))
+								TextColor(ui.RGBA(255, 255, 255, 0.55))
 							for _, al := range d.Albums {
 								a.detailAlbumRow(c, al)
 							}
@@ -929,7 +940,7 @@ func (a *app) detailAlbumRow(c *ui.Context, al assetAlbum) {
 				TextColor(ui.Hex("#ffffff"))
 			if al.Count > 0 {
 				ui.Text(c, fmt.Sprintf("%d 项", al.Count)).FontSize(10.5).
-					TextColor(ui.RGBA(255, 255, 255, 0.45))
+					TextColor(ui.RGBA(255, 255, 255, 0.55))
 			}
 		})
 		ui.Icon(c, forwardIcon).Size(12, 12).TextColor(ui.RGBA(255, 255, 255, 0.3))
@@ -956,7 +967,7 @@ func (a *app) viewerDetailsError(c *ui.Context, v *viewer) {
 	ui.Column(c).Grow(1).Center().Gap(8).Padding(8).Children(func() {
 		ui.Text(c, title).FontSize(13).FontWeight(600).TextColor(ui.Hex("#ffffff"))
 		ui.Text(c, v.detailsErr.Error()).FontSize(11.5).
-			TextColor(ui.RGBA(255, 255, 255, 0.5)).
+			TextColor(ui.RGBA(255, 255, 255, 0.55)).
 			MaxWidth(detailsW - 48).TextAlign(ui.Center)
 		ui.PrimaryButton(c, action).OnClick(fn)
 	})
