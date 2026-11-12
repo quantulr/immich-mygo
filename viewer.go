@@ -18,8 +18,11 @@ const (
 	viewerPad     = 20
 	maxViewerZoom = 6
 	zoomStep      = 1.25
-	// detailsW is the width of the details panel, in DIPs.
-	detailsW = 300
+	// detailsW is the width of the details panel, in DIPs, and detailsSlide
+	// how long it takes to slide in or out, the photo making room as it
+	// goes.
+	detailsW     = 300
+	detailsSlide = 200 * time.Millisecond
 	// livePressDelay is how long a press on a live photo's still lasts
 	// before its motion plays, and livePressSlop how far it may wander
 	// before the press is a drag.
@@ -348,11 +351,13 @@ func (a *app) photoPage(c *ui.Context, v *viewer) {
 	// lays the photo out in.
 	bounds := stage.Bounds()
 	// The details panel stands over the stage's right side; what it covers
-	// does not zoom.
-	panel := float32(0)
+	// does not zoom. It slides in and out, and the photo makes room as it
+	// goes.
+	panelTarget := float32(0)
 	if v.showDetails {
-		panel = detailsW
+		panelTarget = detailsW
 	}
+	panel := stage.Animate("details-panel", panelTarget, detailsSlide)
 	// The photo lays out left of the panel while it is out.
 	photoStage := bounds
 	photoStage.W = max(bounds.W-panel, 0)
@@ -838,12 +843,18 @@ func (a *app) detailsButton(c *ui.Context, open bool) {
 }
 
 // viewerDetails is the panel at the stage's right: what the asset says of
-// itself, from its name and time to its camera and place.
+// itself, from its name and time to its camera and place. It slides in from
+// the right edge as it shows and back out as it goes.
 func (a *app) viewerDetails(c *ui.Context, v *viewer) {
-	ui.Column(c).Absolute().Right(0).Top(0).Bottom(0).Width(detailsW).
+	ui.Column(c).Key("viewer-details").Absolute().Right(0).Top(0).Bottom(0).Width(detailsW).
 		Background(ui.RGBA(13, 14, 18, 0.96)).
 		Border(1, ui.RGBA(255, 255, 255, 0.08)).BorderWidth(0, 0, 0, 1).
-		Padding(16, 16, 12, 16).Children(func() {
+		Padding(16, 16, 12, 16).
+		Transition(ui.ElementTransition{
+			Duration: detailsSlide,
+			Enter:    &ui.Motion{XPercent: 100, Opacity: 1},
+			Exit:     &ui.Motion{XPercent: 100, Opacity: 1},
+		}).Children(func() {
 		ui.Row(c).Height(26).Shrink(0).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "详情").FontSize(13.5).FontWeight(600).TextColor(ui.Hex("#ffffff"))
 			ui.Spacer(c)
