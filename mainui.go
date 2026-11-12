@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -102,8 +103,15 @@ const (
 )
 
 // searchPickAlbum is the album row's way into the picker: a choice that
-// opens it, not a condition of a search.
-const searchPickAlbum = "pick"
+// opens it, not a condition of a search. searchMultiAlbum is the row's
+// value while it asks for albums chosen in the picker, which no option of
+// the drop-down holds. searchNoAlbum is its choice of the assets that no
+// album holds.
+const (
+	searchPickAlbum  = "pick"
+	searchMultiAlbum = "multi"
+	searchNoAlbum    = "-"
+)
 
 // searchState is the header's expandable search field, and the panel of
 // filter conditions it opens beneath itself.
@@ -120,17 +128,18 @@ type searchState struct {
 	filtersGrown bool
 	filtersShown bool
 	// mediaType and favorite are the filter conditions chosen: 0 for all,
-	// 1 for the first choice, and 2 for the second. album is the album the
-	// search asks for: "" for all, searchNoAlbum, or an album ID; albumName
-	// is its name, which the row shows even while the list reloads, and
+	// 1 for the first choice, and 2 for the second. albumIDs are the albums
+	// the search asks for, noAlbum asks for the assets that no album holds,
+	// and albumName is the name of the one chosen, which the row shows.
 	// albumPick is what the row's drop-down shows, which choosing the picker
-	// opens instead of a condition. albumsTried tells that the albums the
-	// picker offers were asked for, once. mode is the way the words are
+	// opens instead of a condition, and albumsTried tells that the albums
+	// the picker offers were asked for, once. mode is the way the words are
 	// searched, and modeChosen tells that the user chose it rather than the
 	// server's machine learning deciding it.
 	mediaType   int
 	favorite    int
-	album       string
+	albumIDs    []string
+	noAlbum     bool
 	albumName   string
 	albumPick   string
 	albumsTried bool
@@ -237,6 +246,7 @@ var (
 	backIcon        = svgIcon(`<path d="M9.8 3.5L5.3 8l4.5 4.5"/><path d="M5.5 8h7"/>`)
 	forwardIcon     = svgIcon(`<path d="M6.2 3.5L10.7 8l-4.5 4.5"/><path d="M10.5 8h-7"/>`)
 	chevronDownIcon = svgIcon(`<path d="M4.2 6.3L8 10l3.8-3.7"/>`)
+	checkIcon       = svgIcon(`<path d="M3.3 8.4l3.1 3.1 6.3-7"/>`)
 	minusIcon       = svgIcon(`<path d="M4 8h8"/>`)
 	plusIcon        = svgIcon(`<path d="M8 4v8"/><path d="M4 8h8"/>`)
 	infoIcon        = svgIcon(`<circle cx="8" cy="8" r="5.6"/><path d="M8 7.2v3.4"/><path d="M8 4.9v.1"/>`)
@@ -719,7 +729,7 @@ func (a *app) searchFilters(c *ui.Context, anchor ui.Element) {
 				a.searchFilterRow(c, "收藏", &s.favorite, "全部", "已收藏", "未收藏")
 				a.searchAlbumRow(c)
 				empty := strings.TrimSpace(s.query) == "" && s.mediaType == 0 && s.favorite == 0 &&
-					a.albumChoice() == ""
+					len(s.albumIDs) == 0 && !s.noAlbum
 				ui.Row(c).Height(30).Children(func() {
 					ui.PrimaryButton(c, "搜索").Fill().Disabled(empty).OnClick(a.runSearch)
 				})
@@ -768,7 +778,7 @@ func (a *app) searchModeRow(c *ui.Context) {
 	})
 }
 
-// searchAlbumRow is the album filter: any album, one of the albums, or the
+// searchAlbumRow is the album filter: any album, any of the albums, or the
 // assets that no album holds.
 func (a *app) searchAlbumRow(c *ui.Context) {
 	ui.Row(c.Key("search-albums")).Height(28).AlignItems(ui.Center).Gap(8).Children(func() {
@@ -809,16 +819,29 @@ func (a *app) searchAlbumSelect(c *ui.Context) {
 			})
 	})
 	if sel.Trigger.Changed() {
-		if s.albumPick == searchPickAlbum {
+		switch s.albumPick {
+		case searchPickAlbum:
 			// The picker takes the row's place instead of choosing a
 			// condition; the row goes on showing the choice it had.
 			s.albumPicker = true
 			s.albumQuery = ""
 			s.albumSearchPending = true
-			s.albumPick = s.album
-		} else {
-			s.album = s.albumPick
+			switch {
+			case len(s.albumIDs) > 0:
+				s.albumPick = searchMultiAlbum
+			case s.noAlbum:
+				s.albumPick = searchNoAlbum
+			default:
+				s.albumPick = ""
+			}
+		case searchNoAlbum:
+			s.albumIDs = nil
 			s.albumName = ""
+			s.noAlbum = true
+		default:
+			s.albumIDs = nil
+			s.albumName = ""
+			s.noAlbum = false
 		}
 		c.After(0)
 	}
@@ -837,7 +860,9 @@ func (a *app) searchAlbumItem(c *ui.Context, sel ui.SelectParts[string], value, 
 }
 
 // searchAlbumPicker shows the albums in the panel in place of the
-// conditions, each with its cover, and a field that narrows them by name.
+// conditions, each with its cover and a check when chosen, and a field
+// that narrows them by name. A click chooses an album, or lets it go, as
+// the choice is as many albums as the user wants.
 func (a *app) searchAlbumPicker(c *ui.Context) {
 	s := &a.main.search
 	t := c.Theme()
@@ -861,6 +886,18 @@ func (a *app) searchAlbumPicker(c *ui.Context) {
 			}
 			ui.Text(c, "选择相册").FontSize(13).FontWeight(600).TextColor(t.Text)
 			ui.Spacer(c)
+			if len(s.albumIDs) > 0 || s.noAlbum {
+				clear := ui.ButtonBase(c).Height(18).Padding(0, 6).Radius(4).Label("清除相册选择")
+				if clear.Pressed() {
+					clear.Background(press)
+				} else if clear.Hovered() {
+					clear.Background(hover)
+				}
+				clear.Children(func() { ui.Text(c, "清除").FontSize(12).TextColor(t.Text.Alpha(0.7)) })
+				if clear.Clicked() {
+					s.albumIDs, s.noAlbum, s.albumName, s.albumPick = nil, false, "", ""
+				}
+			}
 		})
 		field := ui.SearchField(c.Key("search-album-field"), &s.albumQuery).
 			Height(28).Radius(t.Space(2)).Background(well).Border(0, ui.Transparent).
@@ -897,14 +934,16 @@ func (a *app) searchAlbumPicker(c *ui.Context) {
 }
 
 // searchAlbumChoice is one album of the picker: its cover, its name, and
-// the pill of the one chosen.
+// the check of the ones chosen. A click adds it to the choice, or takes it
+// out.
 func (a *app) searchAlbumChoice(c *ui.Context, al *album, pill, hover, press ui.Color) {
 	s := &a.main.search
 	t := c.Theme()
+	chosen := slices.Contains(s.albumIDs, al.ID)
 	row := ui.ButtonBase(c.Key("search-album-"+al.ID)).Height(36).FillWidth().Padding(0, 6).
 		Gap(8).AlignItems(ui.Center).Radius(t.Space(1.5)).Label(al.Name)
 	switch {
-	case s.album == al.ID:
+	case chosen:
 		row.Background(pill)
 	case row.Pressed():
 		row.Background(press)
@@ -922,13 +961,37 @@ func (a *app) searchAlbumChoice(c *ui.Context, al *album, pill, hover, press ui.
 		}
 		ui.Text(c, al.Name).Grow(1).MinWidth(0).SingleLine().Ellipsis("…").
 			FontSize(13).FontWeight(500).TextColor(t.Text)
+		mark := ui.Box(c).Size(14, 14).Shrink(0)
+		if chosen {
+			mark.Children(func() {
+				ui.Icon(c, checkIcon).Size(14, 14).TextColor(t.Text.Alpha(0.8))
+			})
+		}
 	})
 	if row.Clicked() {
-		s.album, s.albumName, s.albumPick = al.ID, al.Name, al.ID
-		s.albumPicker = false
-		s.albumQuery = ""
-		s.albumSearchPending = false
-		c.After(0)
+		if i := slices.Index(s.albumIDs, al.ID); i >= 0 {
+			s.albumIDs = slices.Delete(s.albumIDs, i, i+1)
+		} else {
+			s.albumIDs = append(s.albumIDs, al.ID)
+			s.noAlbum = false
+		}
+		s.albumName = ""
+		if len(s.albumIDs) == 1 {
+			for _, chosen := range a.main.albums.albums {
+				if chosen.ID == s.albumIDs[0] {
+					s.albumName = chosen.Name
+					break
+				}
+			}
+		}
+		switch {
+		case len(s.albumIDs) > 0:
+			s.albumPick = searchMultiAlbum
+		case s.noAlbum:
+			s.albumPick = searchNoAlbum
+		default:
+			s.albumPick = ""
+		}
 	}
 }
 
@@ -949,29 +1012,21 @@ func (a *app) filteredAlbums() []*album {
 	return shown
 }
 
-// searchAlbumLabel is what the album row shows: the chosen album's name, or
-// its condition in words.
+// searchAlbumLabel is what the album row shows: the albums chosen, or their
+// condition in words.
 func (a *app) searchAlbumLabel() string {
 	s := &a.main.search
-	switch s.album {
-	case "":
-		return "全部"
-	case searchNoAlbum:
+	switch {
+	case s.noAlbum:
 		return "不在任何相册中"
-	}
-	if s.albumName != "" {
+	case len(s.albumIDs) == 0:
+		return "全部"
+	case len(s.albumIDs) == 1 && s.albumName != "":
 		return s.albumName
+	case len(s.albumIDs) == 1:
+		return "1 个相册"
 	}
-	return "相册"
-}
-
-// albumChoice is the album condition chosen. Choosing the picker is no
-// condition; it only opens the albums.
-func (a *app) albumChoice() string {
-	if a.main.search.album == searchPickAlbum {
-		return ""
-	}
-	return a.main.search.album
+	return fmt.Sprintf("%d 个相册", len(s.albumIDs))
 }
 
 // glassRowLabel names a row of the filter panel. It is larger and darker
@@ -1042,7 +1097,8 @@ func (a *app) clearFiltersButton(c *ui.Context) {
 	}
 	b.Children(func() { ui.Text(c, "清除").FontSize(12).TextColor(t.Text.Alpha(0.7)) })
 	if b.Clicked() {
-		s.mediaType, s.favorite, s.album, s.albumName, s.albumPick = 0, 0, "", "", ""
+		s.mediaType, s.favorite = 0, 0
+		s.albumIDs, s.noAlbum, s.albumName, s.albumPick = nil, false, "", ""
 	}
 }
 
@@ -1589,7 +1645,8 @@ func (a *app) runSearch() {
 		mode:      s.mode,
 		mediaType: s.mediaType,
 		favorite:  s.favorite,
-		album:     a.albumChoice(),
+		albums:    append([]string(nil), s.albumIDs...),
+		noAlbum:   s.noAlbum,
 	}
 	if req.empty() {
 		return

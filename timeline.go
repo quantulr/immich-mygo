@@ -254,10 +254,6 @@ const (
 	searchOCR
 )
 
-// searchNoAlbum is the album condition of the assets that no album holds,
-// in the album row's choice and in a search request.
-const searchNoAlbum = "-"
-
 // searchRequest is what a search asks the server for: its words, the way
 // they are searched, and the filter conditions chosen.
 type searchRequest struct {
@@ -265,14 +261,16 @@ type searchRequest struct {
 	mode      int
 	mediaType int
 	favorite  int
-	// album is the album the search asks for: "" for all, searchNoAlbum for
-	// the assets no album holds, or an album ID.
-	album string
+	// albums are the albums the search asks for; noAlbum asks for the assets
+	// that no album holds instead.
+	albums  []string
+	noAlbum bool
 }
 
 // empty tells that a search asks for nothing: no words and no condition.
 func (r searchRequest) empty() bool {
-	return strings.TrimSpace(r.text) == "" && r.mediaType == 0 && r.favorite == 0 && r.album == ""
+	return strings.TrimSpace(r.text) == "" && r.mediaType == 0 && r.favorite == 0 &&
+		len(r.albums) == 0 && !r.noAlbum
 }
 
 // fetchClipEnabled tells whether the server searches images by meaning, as
@@ -388,22 +386,29 @@ func searchParams(req searchRequest) (typ *immichapi.AssetTypeEnum, favorite *bo
 	return typ, favorite, &visible
 }
 
-// searchAlbumParams is the album condition of a search: the ID of the album
-// it asks for, or that it asks for the assets no album holds. Both are left
-// out when the condition is all.
+// searchAlbumParams is the album condition of a search: the IDs of the
+// albums it asks for, or that it asks for the assets no album holds. Both
+// are left out when the condition is all.
 func searchAlbumParams(req searchRequest) (ids *[]uuid.UUID, notInAlbum *bool) {
-	switch req.album {
-	case "":
-		return nil, nil
-	case searchNoAlbum:
+	if req.noAlbum {
 		no := true
 		return nil, &no
 	}
-	id, err := uuid.Parse(req.album)
-	if err != nil {
+	if len(req.albums) == 0 {
 		return nil, nil
 	}
-	return &[]uuid.UUID{id}, nil
+	chosen := make([]uuid.UUID, 0, len(req.albums))
+	for _, raw := range req.albums {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			continue
+		}
+		chosen = append(chosen, id)
+	}
+	if len(chosen) == 0 {
+		return nil, nil
+	}
+	return &chosen, nil
 }
 
 // searchPageAssets turns a page of the server's search into the photos of
