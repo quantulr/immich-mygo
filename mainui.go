@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -663,12 +664,11 @@ func (a *app) searchFilters(c *ui.Context, anchor ui.Element) {
 		h := panel.AnimateTo("grow", target, searchMotion)
 		panel.AttachTo(anchor, ui.AnchorBottomRight, ui.AnchorTopRight).
 			Margin(6, 0, 0, 0).Width(searchWidth).Height(h).Clip().
-			Radius(10).Background(cardFace(t)).Border(1, t.Border).
-			Shadow(0, 8, 24, 0, ui.RGBA(0, 0, 0, 0.18))
+			Radius(16).Material(glass.Glass{})
 		panel.Children(func() {
 			ui.Column(c).Gap(10).Padding(12).Children(func() {
 				ui.Row(c).Height(18).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, "筛选条件").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
+					ui.Text(c, "筛选条件").FontSize(13).FontWeight(600).TextColor(t.Text)
 					ui.Spacer(c)
 					a.clearFiltersButton(c)
 				})
@@ -701,9 +701,9 @@ func (a *app) searchFilters(c *ui.Context, anchor ui.Element) {
 // searchFilterRow is one filter condition: its name, and the choices.
 func (a *app) searchFilterRow(c *ui.Context, label string, selected *int, choices ...string) {
 	ui.Row(c).Height(28).AlignItems(ui.Center).Gap(8).Children(func() {
-		ui.Text(c, label).Width(34).Shrink(0).FontSize(12).TextColor(c.Theme().TextMuted)
-		ui.Segmented(c, selected, choices...).Grow(1).MinWidth(0).
-			FillEqually().Label("按" + label + "筛选")
+		a.glassRowLabel(c, label)
+		glassSegmented(c, selected, choices...).Grow(1).MinWidth(0).
+			Label("按" + label + "筛选")
 	})
 }
 
@@ -712,26 +712,82 @@ func (a *app) searchFilterRow(c *ui.Context, label string, selected *int, choice
 func (a *app) searchModeRow(c *ui.Context) {
 	s := &a.main.search
 	ui.Row(c).Height(28).AlignItems(ui.Center).Gap(8).Children(func() {
-		ui.Text(c, "方式").Width(34).Shrink(0).FontSize(12).TextColor(c.Theme().TextMuted)
-		seg := ui.Segmented(c, &s.mode, "智能", "文件名", "OCR").Grow(1).MinWidth(0).
-			FillEqually().Label("选择搜索方式")
+		a.glassRowLabel(c, "方式")
+		seg := glassSegmented(c, &s.mode, "智能", "文件名", "OCR").Grow(1).MinWidth(0).
+			Label("选择搜索方式")
 		if seg.Changed() {
 			s.modeChosen = true
 		}
 	})
 }
 
+// glassRowLabel names a row of the filter panel. It is larger and darker
+// than secondary text, which the glass washes out.
+func (a *app) glassRowLabel(c *ui.Context, label string) {
+	t := c.Theme()
+	ui.Text(c, label).Width(34).Shrink(0).FontSize(13).FontWeight(500).TextColor(t.Text.Alpha(0.7))
+}
+
+// glassSegmented is a segmented control for the filter panel. Its track is
+// a faint well instead of a face of its own, and the chosen segment a soft
+// pill raised from it, so that the control sits on the glass rather than
+// cutting a hole in it. Its words are one size below a button's, in the
+// text color, as the glass thins secondary text.
+func glassSegmented(c *ui.Context, selected *int, labels ...string) ui.Element {
+	t := c.Theme()
+	well, pill, shadow, hover, press := glassControlFaces(t)
+	parts := ui.SegmentedBase(c, selected, len(labels))
+	track := parts.Track.AlignItems(ui.Stretch).Padding(t.Space(0.5)).Gap(t.Space(0.5)).
+		Radius(t.Space(2)).Background(well)
+	track.Children(func() {
+		for i, label := range labels {
+			s := parts.Segment(i)
+			s.Padding(t.Space(1), t.Space(2)).Radius(max(t.Space(2)-t.Space(0.5), 0))
+			switch {
+			case i == *selected:
+				s.Background(pill).Shadow(0, 1, 2, 0, shadow)
+			case s.Pressed():
+				s.Background(press)
+			case s.Hovered():
+				s.Background(hover)
+			}
+			s.Children(func() {
+				text := ui.Text(c, label).SingleLine().FontSize(13.5)
+				if i == *selected {
+					text.FontWeight(600).TextColor(t.Text)
+				} else {
+					text.TextColor(t.Text.Alpha(0.78))
+				}
+			})
+		}
+	})
+	return track.FillEqually()
+}
+
+// glassControlFaces are the faces of the controls on the glass panel: the
+// well of a segmented control's track, the pill of its chosen segment and
+// the pill's shadow, and the faint hover and press of everything else.
+func glassControlFaces(t *ui.Theme) (well, pill, shadow, hover, press ui.Color) {
+	if t.Dark {
+		return ui.RGBA(255, 255, 255, 0.07), ui.RGBA(255, 255, 255, 0.16), ui.RGBA(0, 0, 0, 0.3),
+			ui.RGBA(255, 255, 255, 0.06), ui.RGBA(255, 255, 255, 0.1)
+	}
+	return ui.RGBA(0, 0, 0, 0.06), ui.RGBA(255, 255, 255, 0.9), ui.RGBA(0, 0, 0, 0.1),
+		ui.RGBA(0, 0, 0, 0.05), ui.RGBA(0, 0, 0, 0.09)
+}
+
 // clearFiltersButton takes every filter condition back to all.
 func (a *app) clearFiltersButton(c *ui.Context) {
 	s := &a.main.search
 	t := c.Theme()
+	_, _, _, hover, press := glassControlFaces(t)
 	b := ui.ButtonBase(c).Height(18).Padding(0, 6).Radius(4).Label("清除筛选")
 	if b.Pressed() {
-		b.Background(t.SurfacePressed)
+		b.Background(press)
 	} else if b.Hovered() {
-		b.Background(t.SurfaceHover)
+		b.Background(hover)
 	}
-	b.Children(func() { ui.Text(c, "清除").FontSize(11).TextColor(t.TextMuted) })
+	b.Children(func() { ui.Text(c, "清除").FontSize(12).TextColor(t.Text.Alpha(0.7)) })
 	if b.Clicked() {
 		s.mediaType, s.favorite = 0, 0
 	}
