@@ -95,7 +95,7 @@ type feed struct {
 // DIPs.
 const (
 	searchWidth    = 280
-	searchFiltersH = 200
+	searchFiltersH = 238
 )
 
 // searchState is the header's expandable search field, and the panel of
@@ -113,13 +113,21 @@ type searchState struct {
 	filtersGrown bool
 	filtersShown bool
 	// mediaType and favorite are the filter conditions chosen: 0 for all,
-	// 1 for the first choice, and 2 for the second. mode is the way the
-	// words are searched, and modeChosen tells that the user chose it rather
-	// than the server's machine learning deciding it.
-	mediaType  int
-	favorite   int
-	mode       int
-	modeChosen bool
+	// 1 for the first choice, and 2 for the second. album is the album the
+	// search asks for: "" for all, searchNoAlbum, or an album ID; albums are
+	// the albums the row offers, loaded once. mode is the way the words are
+	// searched, and modeChosen tells that the user chose it rather than the
+	// server's machine learning deciding it.
+	mediaType int
+	favorite  int
+	album     string
+	albums    []*album
+	// albumsTried tells that the albums were asked for, once: a failed load
+	// leaves the row with all and none, rather than asking again every frame.
+	albumsTried   bool
+	albumsLoading bool
+	mode          int
+	modeChosen    bool
 }
 
 // searchResults is the page a search opens in place of the section: what it
@@ -214,6 +222,7 @@ var (
 	sidebarIcon     = svgIcon(`<rect x="2" y="3" width="12" height="10" rx="2"/><path d="M6 3v10"/>`)
 	backIcon        = svgIcon(`<path d="M9.8 3.5L5.3 8l4.5 4.5"/><path d="M5.5 8h7"/>`)
 	forwardIcon     = svgIcon(`<path d="M6.2 3.5L10.7 8l-4.5 4.5"/><path d="M10.5 8h-7"/>`)
+	chevronDownIcon = svgIcon(`<path d="M4.2 6.3L8 10l3.8-3.7"/>`)
 	minusIcon       = svgIcon(`<path d="M4 8h8"/>`)
 	plusIcon        = svgIcon(`<path d="M8 4v8"/><path d="M4 8h8"/>`)
 	infoIcon        = svgIcon(`<circle cx="8" cy="8" r="5.6"/><path d="M8 7.2v3.4"/><path d="M8 4.9v.1"/>`)
@@ -637,11 +646,14 @@ func (a *app) searchControl(c *ui.Context) {
 	if !s.open {
 		s.filtersOpen = false
 		s.filtersShown = false
-	} else if !s.filtersOpen && !s.filtersShown && progress > 0.999 {
-		s.filtersOpen = true
-		s.filtersShown = true
-		s.filtersGrown = false
-		c.After(0)
+	} else {
+		a.loadSearchAlbums()
+		if !s.filtersOpen && !s.filtersShown && progress > 0.999 {
+			s.filtersOpen = true
+			s.filtersShown = true
+			s.filtersGrown = false
+			c.After(0)
+		}
 	}
 	a.searchFilters(c, row)
 }
@@ -675,7 +687,9 @@ func (a *app) searchFilters(c *ui.Context, anchor ui.Element) {
 				a.searchModeRow(c)
 				a.searchFilterRow(c, "类型", &s.mediaType, "全部", "照片", "视频")
 				a.searchFilterRow(c, "收藏", &s.favorite, "全部", "已收藏", "未收藏")
-				empty := strings.TrimSpace(s.query) == "" && s.mediaType == 0 && s.favorite == 0
+				a.searchAlbumRow(c)
+				empty := strings.TrimSpace(s.query) == "" && s.mediaType == 0 && s.favorite == 0 &&
+					s.albumChoice() == ""
 				ui.Row(c).Height(30).Children(func() {
 					ui.PrimaryButton(c, "搜索").Fill().Disabled(empty).OnClick(a.runSearch)
 				})
@@ -719,6 +733,96 @@ func (a *app) searchModeRow(c *ui.Context) {
 			s.modeChosen = true
 		}
 	})
+}
+
+// searchAlbumRow is the album filter: any album, one of the albums, or the
+// assets that no album holds.
+func (a *app) searchAlbumRow(c *ui.Context) {
+	ui.Row(c.Key("search-albums")).Height(28).AlignItems(ui.Center).Gap(8).Children(func() {
+		a.glassRowLabel(c, "相册")
+		a.searchAlbumSelect(c)
+	})
+}
+
+// searchAlbumSelect is the drop-down of the album row, on the glass as the
+// segmented controls are: a faint well for the trigger, and a pill for the
+// option under the pointer or the keys.
+func (a *app) searchAlbumSelect(c *ui.Context) {
+	s := &a.main.search
+	t := c.Theme()
+	well, pill, _, hover, press := glassControlFaces(t)
+	sel := ui.SelectBase(c, &s.album)
+	trigger := sel.Trigger.Height(28).Padding(0, 10).Radius(t.Space(2)).
+		Grow(1).MinWidth(0).Background(well).Label("按相册筛选")
+	if trigger.Pressed() {
+		trigger.Background(press)
+	} else if trigger.Hovered() {
+		trigger.Background(hover)
+	}
+	trigger.Children(func() {
+		ui.Text(c, a.searchAlbumLabel()).SingleLine().FontSize(13.5).TextColor(t.Text)
+		ui.Spacer(c)
+		ui.Icon(c, chevronDownIcon).Size(12, 12).TextColor(t.Text.Alpha(0.6))
+	})
+	h := min((len(s.albums)+2)*27+8, 240)
+	sel.Popup(func(panel ui.Element) {
+		panel.Padding(4).Height(float32(h)).Radius(12).Clip().Material(glass.Glass{}).
+			Children(func() {
+				ui.Scroll(c).Fill().Children(func() {
+					ui.Column(c).Gap(1).FillWidth().Children(func() {
+						a.searchAlbumItem(c, sel, "", "全部", pill)
+						a.searchAlbumItem(c, sel, searchNoAlbum, "不属于任何相册", pill)
+						for _, al := range s.albums {
+							a.searchAlbumItem(c, sel, al.ID, al.Name, pill)
+						}
+					})
+				})
+			})
+	})
+}
+
+// searchAlbumItem is one option of the album drop-down.
+func (a *app) searchAlbumItem(c *ui.Context, sel ui.SelectParts[string], value, label string, pill ui.Color) {
+	t := c.Theme()
+	item := sel.Item(value).Height(26).Padding(0, 8).Radius(t.Space(1.5)).AlignItems(ui.Center)
+	if item.Highlighted() {
+		item.Background(pill)
+	}
+	item.Children(func() {
+		ui.Text(c, label).SingleLine().FontSize(13.5).TextColor(t.Text)
+	})
+}
+
+// searchAlbumLabel is what the album row shows: the chosen album's name, or
+// its condition in words.
+func (a *app) searchAlbumLabel() string {
+	s := &a.main.search
+	switch s.album {
+	case "":
+		return "全部"
+	case searchNoAlbum:
+		return "不属于任何相册"
+	}
+	for _, al := range s.albums {
+		if al.ID == s.album {
+			return al.Name
+		}
+	}
+	return "全部"
+}
+
+// albumChoice is the album condition chosen, with an album that the list no
+// longer offers taken for all.
+func (s *searchState) albumChoice() string {
+	if s.album == "" || s.album == searchNoAlbum {
+		return s.album
+	}
+	for _, al := range s.albums {
+		if al.ID == s.album {
+			return s.album
+		}
+	}
+	return ""
 }
 
 // glassRowLabel names a row of the filter panel. It is larger and darker
@@ -789,7 +893,7 @@ func (a *app) clearFiltersButton(c *ui.Context) {
 	}
 	b.Children(func() { ui.Text(c, "清除").FontSize(12).TextColor(t.Text.Alpha(0.7)) })
 	if b.Clicked() {
-		s.mediaType, s.favorite = 0, 0
+		s.mediaType, s.favorite, s.album = 0, 0, ""
 	}
 }
 
@@ -1336,6 +1440,7 @@ func (a *app) runSearch() {
 		mode:      s.mode,
 		mediaType: s.mediaType,
 		favorite:  s.favorite,
+		album:     s.albumChoice(),
 	}
 	if req.empty() {
 		return
@@ -1529,6 +1634,33 @@ func (a *app) loadAvatar() {
 				return
 			}
 			a.main.avatar = bm
+		})
+	}()
+}
+
+// loadSearchAlbums loads the albums that the album row offers, off the UI
+// thread, publishing them through app.update. It asks once: a load that
+// fails leaves the row with all and none.
+func (a *app) loadSearchAlbums() {
+	s := &a.main.search
+	u := a.login.user
+	if s.albumsTried || s.albumsLoading || u == nil || u.Token == "" {
+		return
+	}
+	s.albumsLoading = true
+	base, token := a.login.serverURL, u.Token
+	go func() {
+		albums, err := fetchAlbums(base, token)
+		a.update(func() {
+			// Another account may have signed in meanwhile.
+			if u := a.login.user; u == nil || u.Token != token {
+				return
+			}
+			s.albumsLoading = false
+			s.albumsTried = true
+			if err == nil {
+				s.albums = albums
+			}
 		})
 	}()
 }

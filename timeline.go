@@ -254,6 +254,10 @@ const (
 	searchOCR
 )
 
+// searchNoAlbum is the album condition of the assets that no album holds,
+// in the album row's choice and in a search request.
+const searchNoAlbum = "-"
+
 // searchRequest is what a search asks the server for: its words, the way
 // they are searched, and the filter conditions chosen.
 type searchRequest struct {
@@ -261,11 +265,14 @@ type searchRequest struct {
 	mode      int
 	mediaType int
 	favorite  int
+	// album is the album the search asks for: "" for all, searchNoAlbum for
+	// the assets no album holds, or an album ID.
+	album string
 }
 
 // empty tells that a search asks for nothing: no words and no condition.
 func (r searchRequest) empty() bool {
-	return strings.TrimSpace(r.text) == "" && r.mediaType == 0 && r.favorite == 0
+	return strings.TrimSpace(r.text) == "" && r.mediaType == 0 && r.favorite == 0 && r.album == ""
 }
 
 // fetchClipEnabled tells whether the server searches images by meaning, as
@@ -302,16 +309,19 @@ func fetchSearchPage(base, token string, req searchRequest, page int) (photos []
 		return nil, 0, 0, err
 	}
 	typ, favorite, visibility := searchParams(req)
+	albumIDs, notInAlbum := searchAlbumParams(req)
 	size := searchPageSize
 	if req.mode == searchSmart && req.text != "" {
 		query := req.text
 		resp, err := client.SearchSmartWithResponse(ctx, immichapi.SmartSearchDto{
-			Query:      &query,
-			Page:       &page,
-			Size:       &size,
-			Type:       typ,
-			IsFavorite: favorite,
-			Visibility: visibility,
+			Query:        &query,
+			Page:         &page,
+			Size:         &size,
+			Type:         typ,
+			IsFavorite:   favorite,
+			Visibility:   visibility,
+			AlbumIds:     albumIDs,
+			IsNotInAlbum: notInAlbum,
 		})
 		if err != nil {
 			return nil, 0, 0, requestError(err)
@@ -326,11 +336,13 @@ func fetchSearchPage(base, token string, req searchRequest, page int) (photos []
 	}
 
 	dto := immichapi.MetadataSearchDto{
-		Page:       &page,
-		Size:       &size,
-		Type:       typ,
-		IsFavorite: favorite,
-		Visibility: visibility,
+		Page:         &page,
+		Size:         &size,
+		Type:         typ,
+		IsFavorite:   favorite,
+		Visibility:   visibility,
+		AlbumIds:     albumIDs,
+		IsNotInAlbum: notInAlbum,
 	}
 	order := immichapi.AssetOrderDesc
 	dto.Order = &order
@@ -374,6 +386,24 @@ func searchParams(req searchRequest) (typ *immichapi.AssetTypeEnum, favorite *bo
 	}
 	visible := immichapi.Timeline
 	return typ, favorite, &visible
+}
+
+// searchAlbumParams is the album condition of a search: the ID of the album
+// it asks for, or that it asks for the assets no album holds. Both are left
+// out when the condition is all.
+func searchAlbumParams(req searchRequest) (ids *[]uuid.UUID, notInAlbum *bool) {
+	switch req.album {
+	case "":
+		return nil, nil
+	case searchNoAlbum:
+		no := true
+		return nil, &no
+	}
+	id, err := uuid.Parse(req.album)
+	if err != nil {
+		return nil, nil
+	}
+	return &[]uuid.UUID{id}, nil
 }
 
 // searchPageAssets turns a page of the server's search into the photos of
