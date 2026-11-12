@@ -96,7 +96,14 @@ type feed struct {
 const (
 	searchWidth    = 280
 	searchFiltersH = 238
+	// searchAlbumPickerH is how tall the panel grows with the album picker
+	// in place of the conditions.
+	searchAlbumPickerH = 336
 )
+
+// searchPickAlbum is the album row's way into the picker: a choice that
+// opens it, not a condition of a search.
+const searchPickAlbum = "pick"
 
 // searchState is the header's expandable search field, and the panel of
 // filter conditions it opens beneath itself.
@@ -114,20 +121,27 @@ type searchState struct {
 	filtersShown bool
 	// mediaType and favorite are the filter conditions chosen: 0 for all,
 	// 1 for the first choice, and 2 for the second. album is the album the
-	// search asks for: "" for all, searchNoAlbum, or an album ID; albums are
-	// the albums the row offers, loaded once. mode is the way the words are
+	// search asks for: "" for all, searchNoAlbum, or an album ID; albumName
+	// is its name, which the row shows even while the list reloads, and
+	// albumPick is what the row's drop-down shows, which choosing the picker
+	// opens instead of a condition. albumsTried tells that the albums the
+	// picker offers were asked for, once. mode is the way the words are
 	// searched, and modeChosen tells that the user chose it rather than the
 	// server's machine learning deciding it.
-	mediaType int
-	favorite  int
-	album     string
-	albums    []*album
-	// albumsTried tells that the albums were asked for, once: a failed load
-	// leaves the row with all and none, rather than asking again every frame.
-	albumsTried   bool
-	albumsLoading bool
-	mode          int
-	modeChosen    bool
+	mediaType   int
+	favorite    int
+	album       string
+	albumName   string
+	albumPick   string
+	albumsTried bool
+	// albumPicker shows the albums in place of the conditions; albumQuery
+	// narrows them by name, and albumSearchPending asks the focus of its
+	// field until it has it.
+	albumPicker        bool
+	albumQuery         string
+	albumSearchPending bool
+	mode               int
+	modeChosen         bool
 }
 
 // searchResults is the page a search opens in place of the section: what it
@@ -646,8 +660,17 @@ func (a *app) searchControl(c *ui.Context) {
 	if !s.open {
 		s.filtersOpen = false
 		s.filtersShown = false
+		s.albumPicker = false
+		s.albumQuery = ""
+		s.albumSearchPending = false
 	} else {
-		a.loadSearchAlbums()
+		if !s.albumsTried {
+			s.albumsTried = true
+			// The picker shares the albums of the grid, covers and all.
+			if f := &a.main.albums; !f.loaded && !f.loading {
+				a.loadAlbums(f)
+			}
+		}
 		if !s.filtersOpen && !s.filtersShown && progress > 0.999 {
 			s.filtersOpen = true
 			s.filtersShown = true
@@ -672,12 +695,19 @@ func (a *app) searchFilters(c *ui.Context, anchor ui.Element) {
 		target := float32(0)
 		if s.filtersGrown {
 			target = searchFiltersH
+			if s.albumPicker {
+				target = searchAlbumPickerH
+			}
 		}
 		h := panel.AnimateTo("grow", target, searchMotion)
 		panel.AttachTo(anchor, ui.AnchorBottomRight, ui.AnchorTopRight).
 			Margin(6, 0, 0, 0).Width(searchWidth).Height(h).Clip().
 			Radius(16).Material(glass.Glass{})
 		panel.Children(func() {
+			if s.albumPicker {
+				a.searchAlbumPicker(c)
+				return
+			}
 			ui.Column(c).Gap(10).Padding(12).Children(func() {
 				ui.Row(c).Height(18).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, "筛选条件").FontSize(13).FontWeight(600).TextColor(t.Text)
@@ -689,7 +719,7 @@ func (a *app) searchFilters(c *ui.Context, anchor ui.Element) {
 				a.searchFilterRow(c, "收藏", &s.favorite, "全部", "已收藏", "未收藏")
 				a.searchAlbumRow(c)
 				empty := strings.TrimSpace(s.query) == "" && s.mediaType == 0 && s.favorite == 0 &&
-					s.albumChoice() == ""
+					a.albumChoice() == ""
 				ui.Row(c).Height(30).Children(func() {
 					ui.PrimaryButton(c, "搜索").Fill().Disabled(empty).OnClick(a.runSearch)
 				})
@@ -702,6 +732,9 @@ func (a *app) searchFilters(c *ui.Context, anchor ui.Element) {
 	})
 	if panel.Dismissed() {
 		s.filtersOpen = false
+		s.albumPicker = false
+		s.albumQuery = ""
+		s.albumSearchPending = false
 		// The results keep the search field, which the page's back button
 		// closes instead.
 		if !a.main.results.open {
@@ -744,14 +777,15 @@ func (a *app) searchAlbumRow(c *ui.Context) {
 	})
 }
 
-// searchAlbumSelect is the drop-down of the album row, on the glass as the
-// segmented controls are: a faint well for the trigger, and a pill for the
-// option under the pointer or the keys.
+// searchAlbumSelect is the drop-down of the album row: any album, the
+// assets that no album holds, or the way into the picker. It is on the
+// glass as the segmented controls are: a faint well for the trigger, and a
+// pill for the option under the pointer or the keys.
 func (a *app) searchAlbumSelect(c *ui.Context) {
 	s := &a.main.search
 	t := c.Theme()
 	well, pill, _, hover, press := glassControlFaces(t)
-	sel := ui.SelectBase(c, &s.album)
+	sel := ui.SelectBase(c, &s.albumPick)
 	trigger := sel.Trigger.Height(28).Padding(0, 10).Radius(t.Space(2)).
 		Grow(1).MinWidth(0).Background(well).Label("按相册筛选")
 	if trigger.Pressed() {
@@ -764,21 +798,30 @@ func (a *app) searchAlbumSelect(c *ui.Context) {
 		ui.Spacer(c)
 		ui.Icon(c, chevronDownIcon).Size(12, 12).TextColor(t.Text.Alpha(0.6))
 	})
-	h := min((len(s.albums)+2)*27+8, 240)
 	sel.Popup(func(panel ui.Element) {
-		panel.Padding(4).Height(float32(h)).Radius(12).Clip().Material(glass.Glass{}).
+		panel.Padding(4).Height(3*27 + 8).Radius(12).Clip().Material(glass.Glass{}).
 			Children(func() {
-				ui.Scroll(c).Fill().Children(func() {
-					ui.Column(c).Gap(1).FillWidth().Children(func() {
-						a.searchAlbumItem(c, sel, "", "全部", pill)
-						a.searchAlbumItem(c, sel, searchNoAlbum, "不属于任何相册", pill)
-						for _, al := range s.albums {
-							a.searchAlbumItem(c, sel, al.ID, al.Name, pill)
-						}
-					})
+				ui.Column(c).Gap(1).FillWidth().Children(func() {
+					a.searchAlbumItem(c, sel, "", "全部", pill)
+					a.searchAlbumItem(c, sel, searchNoAlbum, "不在任何相册中", pill)
+					a.searchAlbumItem(c, sel, searchPickAlbum, "选择相册…", pill)
 				})
 			})
 	})
+	if sel.Trigger.Changed() {
+		if s.albumPick == searchPickAlbum {
+			// The picker takes the row's place instead of choosing a
+			// condition; the row goes on showing the choice it had.
+			s.albumPicker = true
+			s.albumQuery = ""
+			s.albumSearchPending = true
+			s.albumPick = s.album
+		} else {
+			s.album = s.albumPick
+			s.albumName = ""
+		}
+		c.After(0)
+	}
 }
 
 // searchAlbumItem is one option of the album drop-down.
@@ -793,6 +836,119 @@ func (a *app) searchAlbumItem(c *ui.Context, sel ui.SelectParts[string], value, 
 	})
 }
 
+// searchAlbumPicker shows the albums in the panel in place of the
+// conditions, each with its cover, and a field that narrows them by name.
+func (a *app) searchAlbumPicker(c *ui.Context) {
+	s := &a.main.search
+	t := c.Theme()
+	well, pill, _, hover, press := glassControlFaces(t)
+	ui.Column(c).Gap(10).Padding(12).Fill().Children(func() {
+		ui.Row(c).Height(18).AlignItems(ui.Center).Gap(6).Children(func() {
+			back := ui.ButtonBase(c).Size(18, 18).Radius(4).Label("返回筛选条件")
+			if back.Pressed() {
+				back.Background(press)
+			} else if back.Hovered() {
+				back.Background(hover)
+			}
+			back.Children(func() {
+				ui.Icon(c, backIcon).Size(14, 14).TextColor(t.Text.Alpha(0.7))
+			})
+			if back.Clicked() {
+				s.albumPicker = false
+				s.albumQuery = ""
+				s.albumSearchPending = false
+				c.After(0)
+			}
+			ui.Text(c, "选择相册").FontSize(13).FontWeight(600).TextColor(t.Text)
+			ui.Spacer(c)
+		})
+		field := ui.SearchField(c.Key("search-album-field"), &s.albumQuery).
+			Height(28).Radius(t.Space(2)).Background(well).Border(0, ui.Transparent).
+			Placeholder("筛选相册").Label("筛选相册")
+		if s.albumSearchPending {
+			if field.Focused() {
+				s.albumSearchPending = false
+			} else {
+				field.Focus()
+			}
+		}
+		shown := a.filteredAlbums()
+		if len(shown) == 0 {
+			msg := "没有匹配的相册"
+			switch {
+			case a.main.albums.loading:
+				msg = "正在加载相册…"
+			case a.main.albums.err != nil:
+				msg = "无法加载相册"
+			}
+			ui.Box(c).Grow(1).MinHeight(0).Center().Children(func() {
+				ui.Text(c, msg).FontSize(12.5).TextColor(t.TextMuted)
+			})
+			return
+		}
+		ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
+			ui.Column(c).Gap(1).FillWidth().Children(func() {
+				for _, al := range shown {
+					a.searchAlbumChoice(c, al, pill, hover, press)
+				}
+			})
+		})
+	})
+}
+
+// searchAlbumChoice is one album of the picker: its cover, its name, and
+// the pill of the one chosen.
+func (a *app) searchAlbumChoice(c *ui.Context, al *album, pill, hover, press ui.Color) {
+	s := &a.main.search
+	t := c.Theme()
+	row := ui.ButtonBase(c.Key("search-album-"+al.ID)).Height(36).FillWidth().Padding(0, 6).
+		Gap(8).AlignItems(ui.Center).Radius(t.Space(1.5)).Label(al.Name)
+	switch {
+	case s.album == al.ID:
+		row.Background(pill)
+	case row.Pressed():
+		row.Background(press)
+	case row.Hovered():
+		row.Background(hover)
+	}
+	row.Children(func() {
+		cover := ui.Box(c).Size(26, 26).Shrink(0).Radius(6).Clip().Background(t.SurfaceHover)
+		if al.Bm != nil {
+			cover.Children(func() { ui.Image(c, al.Bm).Fill().Fit(ui.Cover) })
+		} else {
+			cover.Center().Children(func() {
+				ui.Icon(c, albumsIcon).Size(14, 14).TextColor(t.TextMuted)
+			})
+		}
+		ui.Text(c, al.Name).Grow(1).MinWidth(0).SingleLine().Ellipsis("…").
+			FontSize(13).FontWeight(500).TextColor(t.Text)
+	})
+	if row.Clicked() {
+		s.album, s.albumName, s.albumPick = al.ID, al.Name, al.ID
+		s.albumPicker = false
+		s.albumQuery = ""
+		s.albumSearchPending = false
+		c.After(0)
+	}
+}
+
+// filteredAlbums returns the albums that the picker offers: those whose
+// name holds what its field asked for.
+func (a *app) filteredAlbums() []*album {
+	albums := a.main.albums.albums
+	q := strings.ToLower(strings.TrimSpace(a.main.search.albumQuery))
+	if q == "" {
+		return albums
+	}
+	shown := make([]*album, 0, len(albums))
+	for _, al := range albums {
+		if strings.Contains(strings.ToLower(al.Name), q) {
+			shown = append(shown, al)
+		}
+	}
+	return shown
+}
+
 // searchAlbumLabel is what the album row shows: the chosen album's name, or
 // its condition in words.
 func (a *app) searchAlbumLabel() string {
@@ -801,28 +957,21 @@ func (a *app) searchAlbumLabel() string {
 	case "":
 		return "全部"
 	case searchNoAlbum:
-		return "不属于任何相册"
+		return "不在任何相册中"
 	}
-	for _, al := range s.albums {
-		if al.ID == s.album {
-			return al.Name
-		}
+	if s.albumName != "" {
+		return s.albumName
 	}
-	return "全部"
+	return "相册"
 }
 
-// albumChoice is the album condition chosen, with an album that the list no
-// longer offers taken for all.
-func (s *searchState) albumChoice() string {
-	if s.album == "" || s.album == searchNoAlbum {
-		return s.album
+// albumChoice is the album condition chosen. Choosing the picker is no
+// condition; it only opens the albums.
+func (a *app) albumChoice() string {
+	if a.main.search.album == searchPickAlbum {
+		return ""
 	}
-	for _, al := range s.albums {
-		if al.ID == s.album {
-			return s.album
-		}
-	}
-	return ""
+	return a.main.search.album
 }
 
 // glassRowLabel names a row of the filter panel. It is larger and darker
@@ -893,7 +1042,7 @@ func (a *app) clearFiltersButton(c *ui.Context) {
 	}
 	b.Children(func() { ui.Text(c, "清除").FontSize(12).TextColor(t.Text.Alpha(0.7)) })
 	if b.Clicked() {
-		s.mediaType, s.favorite, s.album = 0, 0, ""
+		s.mediaType, s.favorite, s.album, s.albumName, s.albumPick = 0, 0, "", "", ""
 	}
 }
 
@@ -1440,7 +1589,7 @@ func (a *app) runSearch() {
 		mode:      s.mode,
 		mediaType: s.mediaType,
 		favorite:  s.favorite,
-		album:     s.albumChoice(),
+		album:     a.albumChoice(),
 	}
 	if req.empty() {
 		return
@@ -1448,6 +1597,9 @@ func (a *app) runSearch() {
 	a.closeViewer()
 	s.filtersOpen = false
 	s.filtersShown = true
+	s.albumPicker = false
+	s.albumQuery = ""
+	s.albumSearchPending = false
 	r := &a.main.results
 	// The loads of the last search go on numbering, so that one finishing
 	// late is not taken for the new search's.
@@ -1568,6 +1720,9 @@ func (a *app) closeSearch() {
 	s.focusPending = false
 	s.filtersOpen = false
 	s.filtersShown = false
+	s.albumPicker = false
+	s.albumQuery = ""
+	s.albumSearchPending = false
 }
 
 // loadClipEnabled learns whether the server searches images by meaning, off
@@ -1634,33 +1789,6 @@ func (a *app) loadAvatar() {
 				return
 			}
 			a.main.avatar = bm
-		})
-	}()
-}
-
-// loadSearchAlbums loads the albums that the album row offers, off the UI
-// thread, publishing them through app.update. It asks once: a load that
-// fails leaves the row with all and none.
-func (a *app) loadSearchAlbums() {
-	s := &a.main.search
-	u := a.login.user
-	if s.albumsTried || s.albumsLoading || u == nil || u.Token == "" {
-		return
-	}
-	s.albumsLoading = true
-	base, token := a.login.serverURL, u.Token
-	go func() {
-		albums, err := fetchAlbums(base, token)
-		a.update(func() {
-			// Another account may have signed in meanwhile.
-			if u := a.login.user; u == nil || u.Token != token {
-				return
-			}
-			s.albumsLoading = false
-			s.albumsTried = true
-			if err == nil {
-				s.albums = albums
-			}
 		})
 	}()
 }
