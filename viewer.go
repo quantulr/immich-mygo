@@ -980,9 +980,34 @@ func (a *app) detailAlbumRow(c *ui.Context, al assetAlbum) {
 }
 
 // openDetailAlbum shows the days of an album the image page lists, leaving
-// the photo page for it.
+// the photo page for it. Closing the album returns to the page, which waits
+// behind the album with what it showed.
 func (a *app) openDetailAlbum(al assetAlbum) {
-	a.selectSection(sectionAlbums)
+	v := a.main.viewer
+	if v == nil {
+		return
+	}
+	b := &albumBackdrop{
+		viewer:    v,
+		section:   a.main.section,
+		album:     a.main.albumOpen,
+		albumFeed: a.main.albumFeed,
+	}
+	if a.main.results.open {
+		b.results = a.main.results
+		b.search = a.main.search
+		// The field may change the list of albums under the copy.
+		b.search.albumIDs = append([]string(nil), a.main.search.albumIDs...)
+	}
+	a.closeViewer()
+	if a.main.results.open {
+		a.closeSearch()
+	}
+	a.main.albumBack = b
+	a.main.section = sectionAlbums
+	if f := &a.main.albums; !f.loaded && !f.loading {
+		a.loadAlbums(f)
+	}
 	a.openAlbum(&album{ID: al.ID, Name: al.Name, Count: al.Count, Cover: al.Cover, Bm: al.Bm})
 }
 

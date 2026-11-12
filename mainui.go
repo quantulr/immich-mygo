@@ -168,6 +168,18 @@ type searchResults struct {
 	moreErr  error
 }
 
+// albumBackdrop is where an album the image page's details opened returns
+// to: the image page it left, the section behind it, and the album that
+// page browsed, with the days and the search results it showed.
+type albumBackdrop struct {
+	viewer    *viewer
+	section   section
+	album     *album
+	albumFeed feed
+	results   searchResults
+	search    searchState
+}
+
 // mainState is the main window: the section shown, and each section's
 // content, loaded once and kept.
 type mainState struct {
@@ -176,9 +188,11 @@ type mainState struct {
 	favorites feed
 	albums    feed
 	// albumOpen is the album shown from the grid, and albumFeed the days
-	// it loads into.
+	// it loads into. albumBack is what an album opened from the image
+	// page's details returns to instead of the grid.
 	albumOpen *album
 	albumFeed feed
+	albumBack *albumBackdrop
 	// viewer is the image page shown in place of the timeline, or nil.
 	viewer *viewer
 	// sidebarHidden hides the sidebar, which the card's header then offers
@@ -475,7 +489,11 @@ func (a *app) cardHeader(c *ui.Context) {
 			title, week = a.viewerCaption()
 			count = a.viewerCounter()
 		case albumOpen:
-			a.iconButton(c, backIcon, "返回相册", a.closeAlbum)
+			back := "返回相册"
+			if a.main.albumBack != nil {
+				back = "返回图片"
+			}
+			a.iconButton(c, backIcon, back, a.closeAlbum)
 			title = album.Name
 			if n := a.albumCount(); n > 0 {
 				count = fmt.Sprintf("%d 项", n)
@@ -1614,10 +1632,54 @@ func (a *app) openAlbum(al *album) {
 	a.loadTimeline(f)
 }
 
-// closeAlbum returns to the grid of albums, keeping the album's days for
-// when it opens again.
+// closeAlbum leaves the open album for what opened it: the grid of albums,
+// or, for an album the image page's details opened, that page again.
 func (a *app) closeAlbum() {
+	if b := a.main.albumBack; b != nil {
+		a.main.albumBack = nil
+		a.restoreAlbumBack(b)
+		return
+	}
 	a.main.albumOpen = nil
+}
+
+// restoreAlbumBack shows the image page an album was opened from, with the
+// section behind it and, for a page browsing search results, those results.
+func (a *app) restoreAlbumBack(b *albumBackdrop) {
+	a.main.section = b.section
+	a.main.albumOpen = b.album
+	// The album opened over this one dropped its loads as they went on
+	// numbering: the days still loading ask again.
+	if a.main.albumFeed.attempt != b.albumFeed.attempt {
+		b.albumFeed.loading = false
+		for _, d := range b.albumFeed.days {
+			if !d.loaded {
+				d.loading = false
+			}
+		}
+	}
+	a.main.albumFeed = b.albumFeed
+	if b.results.open {
+		// A page on its way when the image page left was dropped by the
+		// close, and loads again as the results' end shows.
+		b.results.more = false
+		a.main.results = b.results
+		a.main.search = b.search
+	}
+	a.main.viewer = b.viewer
+	// The page takes the keyboard again, as it did when it opened.
+	b.viewer.focusStage = true
+	// A preview on its way when the album opened was dropped, and loads
+	// again here; the page otherwise shows what it did.
+	if b.viewer.bm == nil {
+		a.showViewerPhoto(b.viewer.feed, b.viewer.dayKey, b.viewer.id)
+	} else if p := b.viewer.photo(); p != nil && p.Video {
+		a.playVideo(b.viewer.id)
+	}
+	// The details asked for when the album opened were dropped as well.
+	if b.viewer.showDetails && b.viewer.details == nil && b.viewer.detailsErr == nil {
+		a.loadDetails(b.viewer)
+	}
 }
 
 // selectSection shows another section, loading it the first time. Asking
@@ -1634,6 +1696,9 @@ func (a *app) selectSection(s section) {
 			return
 		}
 		if s == sectionAlbums && a.main.albumOpen != nil {
+			// The section asked for again shows the grid, even over an
+			// album that would otherwise return to the image page.
+			a.main.albumBack = nil
 			a.closeAlbum()
 		}
 		return
@@ -1642,6 +1707,7 @@ func (a *app) selectSection(s section) {
 	if a.main.results.open {
 		a.closeSearch()
 	}
+	a.main.albumBack = nil
 	if s != sectionAlbums {
 		a.main.albumOpen = nil
 	}
