@@ -845,21 +845,56 @@ func (a *app) detailsButton(c *ui.Context, open bool) {
 	}
 }
 
-// detailsTheme is the theme the details panel builds with: dark whatever
-// the window's, as it stands on the dark image page, and white text over a
-// light pane would wash out.
-var detailsTheme = ui.DarkTheme()
+// detailFaces are how the details panel is made in the window's theme: the
+// liquid glass of its pane, and the ink of what it says, white over the
+// dark pane of a dark window and near black over the light pane of a light
+// one. The faint faces of its controls and rows are white on the dark pane
+// and black on the light.
+type detailFaces struct {
+	pane     glass.Glass
+	ink      ui.Color
+	hover    ui.Color
+	press    ui.Color
+	row      ui.Color
+	rowHover ui.Color
+	cover    ui.Color
+}
+
+// detailFacesOf returns the details panel's faces for a theme.
+func detailFacesOf(t *ui.Theme) detailFaces {
+	if t.Dark {
+		return detailFaces{
+			pane:     glass.Glass{Tint: ui.RGBA(13, 14, 18, 0.5)},
+			ink:      ui.Hex("#ffffff"),
+			hover:    ui.RGBA(255, 255, 255, 0.12),
+			press:    ui.RGBA(255, 255, 255, 0.2),
+			row:      ui.RGBA(255, 255, 255, 0.04),
+			rowHover: ui.RGBA(255, 255, 255, 0.1),
+			cover:    ui.RGBA(255, 255, 255, 0.1),
+		}
+	}
+	return detailFaces{
+		pane:     glass.Glass{Tint: ui.RGBA(250, 250, 252, 0.5)},
+		ink:      ui.Hex("#18181b"),
+		hover:    ui.RGBA(0, 0, 0, 0.06),
+		press:    ui.RGBA(0, 0, 0, 0.1),
+		row:      ui.RGBA(0, 0, 0, 0.05),
+		rowHover: ui.RGBA(0, 0, 0, 0.08),
+		cover:    ui.RGBA(0, 0, 0, 0.08),
+	}
+}
 
 // viewerDetails is the panel at the stage's right: what the asset says of
 // itself, from its name and time to its camera and place. It is a pane of
-// dark liquid glass, its corners round and its edges clear of the stage's,
-// over the photo; it slides in from the right edge as it shows and back out
-// as it goes.
+// liquid glass over the photo, dark in a dark window and light in a light
+// one, its corners round and its edges clear of the stage's; it slides in
+// from the right edge as it shows and back out as it goes.
 func (a *app) viewerDetails(c *ui.Context, v *viewer) {
-	ui.Themed(c, detailsTheme).Key("viewer-details").Absolute().
+	f := detailFacesOf(c.Theme())
+	ui.Box(c).Key("viewer-details").Absolute().
 		Right(detailsMargin).Top(detailsMargin).Bottom(detailsMargin).Width(detailsW).
 		Radius(16).
-		Material(glass.Glass{Tint: ui.RGBA(13, 14, 18, 0.5)}).
+		Material(f.pane).
 		Padding(16, 16, 12, 16).
 		Transition(ui.ElementTransition{
 			Duration: detailsSlide,
@@ -867,17 +902,17 @@ func (a *app) viewerDetails(c *ui.Context, v *viewer) {
 			Exit:     &ui.Motion{XPercent: 100, X: detailsMargin, Opacity: 1},
 		}).Children(func() {
 		ui.Row(c).Height(26).Shrink(0).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "详情").FontSize(13.5).FontWeight(600).TextColor(ui.Hex("#ffffff"))
+			ui.Text(c, "详情").FontSize(13.5).FontWeight(600).TextColor(f.ink)
 			ui.Spacer(c)
 			b := ui.ButtonBase(c).Size(24, 24).Radius(6).Center().
 				Label("关闭详情").Tooltip("关闭详情").KeepFocus()
 			if b.Pressed() {
-				b.Background(ui.RGBA(255, 255, 255, 0.2))
+				b.Background(f.press)
 			} else if b.Hovered() {
-				b.Background(ui.RGBA(255, 255, 255, 0.12))
+				b.Background(f.hover)
 			}
 			b.Children(func() {
-				ui.Icon(c, closeIcon).Size(13, 13).TextColor(ui.RGBA(255, 255, 255, 0.65))
+				ui.Icon(c, closeIcon).Size(13, 13).TextColor(f.ink.Alpha(0.65))
 			})
 			if b.Clicked() {
 				a.toggleDetails()
@@ -885,11 +920,11 @@ func (a *app) viewerDetails(c *ui.Context, v *viewer) {
 		})
 		switch {
 		case v.detailsErr != nil:
-			a.viewerDetailsError(c, v)
+			a.viewerDetailsError(c, f, v)
 		case v.details == nil:
 			ui.Column(c).Grow(1).Center().Gap(10).Children(func() {
-				ui.Spinner(c).Label("正在加载详情").TextColor(ui.RGBA(255, 255, 255, 0.6))
-				ui.Text(c, "正在加载详情…").FontSize(11.5).TextColor(ui.RGBA(255, 255, 255, 0.6))
+				ui.Spinner(c).Label("正在加载详情").TextColor(f.ink.Alpha(0.6))
+				ui.Text(c, "正在加载详情…").FontSize(11.5).TextColor(f.ink.Alpha(0.6))
 			})
 		default:
 			ui.Scroll(c).Grow(1).Children(func() {
@@ -897,24 +932,24 @@ func (a *app) viewerDetails(c *ui.Context, v *viewer) {
 					for _, row := range v.detailRows() {
 						ui.Column(c).Gap(2).Children(func() {
 							ui.Text(c, row.label).FontSize(10.5).
-								TextColor(ui.RGBA(255, 255, 255, 0.55))
+								TextColor(f.ink.Alpha(0.55))
 							if row.copyable {
 								ui.Row(c).Gap(4).AlignItems(ui.Start).Children(func() {
 									ui.Text(c, row.value).Grow(1).MinWidth(0).
-										FontSize(12.5).TextColor(ui.Hex("#ffffff"))
-									a.detailCopyButton(c, row.value)
+										FontSize(12.5).TextColor(f.ink)
+									a.detailCopyButton(c, f, row.value)
 								})
 								return
 							}
-							ui.Text(c, row.value).FontSize(12.5).TextColor(ui.Hex("#ffffff"))
+							ui.Text(c, row.value).FontSize(12.5).TextColor(f.ink)
 						})
 					}
 					if d := v.details; d != nil && len(d.Albums) > 0 {
 						ui.Column(c).Gap(4).Children(func() {
 							ui.Text(c, "相册").FontSize(10.5).
-								TextColor(ui.RGBA(255, 255, 255, 0.55))
+								TextColor(f.ink.Alpha(0.55))
 							for _, al := range d.Albums {
-								a.detailAlbumRow(c, al)
+								a.detailAlbumRow(c, f, al)
 							}
 						})
 					}
@@ -926,17 +961,17 @@ func (a *app) viewerDetails(c *ui.Context, v *viewer) {
 
 // detailCopyButton copies a value of the details panel, as the file's name,
 // to the clipboard.
-func (a *app) detailCopyButton(c *ui.Context, value string) {
+func (a *app) detailCopyButton(c *ui.Context, f detailFaces, value string) {
 	b := ui.ButtonBase(c).Size(18, 18).Shrink(0).Radius(4).Center().
 		Label("复制文件名").Tooltip("复制文件名")
 	if b.Pressed() {
-		b.Background(ui.RGBA(255, 255, 255, 0.2))
+		b.Background(f.press)
 	} else if b.Hovered() {
-		b.Background(ui.RGBA(255, 255, 255, 0.12))
+		b.Background(f.hover)
 	}
-	fg := ui.RGBA(255, 255, 255, 0.55)
+	fg := f.ink.Alpha(0.55)
 	if b.Hovered() {
-		fg = ui.RGBA(255, 255, 255, 0.85)
+		fg = f.ink.Alpha(0.85)
 	}
 	b.Children(func() { ui.Icon(c, copyIcon).Size(12, 12).TextColor(fg) })
 	if b.Clicked() {
@@ -947,32 +982,32 @@ func (a *app) detailCopyButton(c *ui.Context, value string) {
 
 // detailAlbumRow shows an album that holds the asset: its cover, its name
 // and how many assets it holds. A click opens the album's days.
-func (a *app) detailAlbumRow(c *ui.Context, al assetAlbum) {
+func (a *app) detailAlbumRow(c *ui.Context, f detailFaces, al assetAlbum) {
 	row := ui.Row(c).Height(40).Padding(4).Gap(8).Radius(8).AlignItems(ui.Center).
-		Background(ui.RGBA(255, 255, 255, 0.04)).Cursor(ui.CursorPointer).
+		Background(f.row).Cursor(ui.CursorPointer).
 		Label("打开相册 " + al.Name)
 	if row.Hovered() {
-		row.Background(ui.RGBA(255, 255, 255, 0.1))
+		row.Background(f.rowHover)
 	}
 	row.Children(func() {
 		cover := ui.Box(c).Size(30, 30).Shrink(0).Radius(6).Clip().
-			Background(ui.RGBA(255, 255, 255, 0.1))
+			Background(f.cover)
 		if al.Bm != nil {
 			cover.Children(func() { ui.Image(c, al.Bm).Fill().Fit(ui.Cover) })
 		} else {
 			cover.Center().Children(func() {
-				ui.Icon(c, albumsIcon).Size(14, 14).TextColor(ui.RGBA(255, 255, 255, 0.45))
+				ui.Icon(c, albumsIcon).Size(14, 14).TextColor(f.ink.Alpha(0.45))
 			})
 		}
 		ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
 			ui.Text(c, al.Name).FontSize(12).SingleLine().Ellipsis("…").
-				TextColor(ui.Hex("#ffffff"))
+				TextColor(f.ink)
 			if al.Count > 0 {
 				ui.Text(c, fmt.Sprintf("%d 项", al.Count)).FontSize(10.5).
-					TextColor(ui.RGBA(255, 255, 255, 0.55))
+					TextColor(f.ink.Alpha(0.55))
 			}
 		})
-		ui.Icon(c, forwardIcon).Size(12, 12).TextColor(ui.RGBA(255, 255, 255, 0.3))
+		ui.Icon(c, forwardIcon).Size(12, 12).TextColor(f.ink.Alpha(0.3))
 	})
 	if row.Clicked() {
 		a.openDetailAlbum(al)
@@ -1013,15 +1048,15 @@ func (a *app) openDetailAlbum(al assetAlbum) {
 
 // viewerDetailsError tells why the details did not come, and offers to try
 // again.
-func (a *app) viewerDetailsError(c *ui.Context, v *viewer) {
+func (a *app) viewerDetailsError(c *ui.Context, f detailFaces, v *viewer) {
 	title, action, fn := "无法加载详情", "重试", func() { a.loadDetails(v) }
 	if errors.Is(v.detailsErr, errSessionExpired) {
 		title, action, fn = "登录已过期", "重新登录", a.signOut
 	}
 	ui.Column(c).Grow(1).Center().Gap(8).Padding(8).Children(func() {
-		ui.Text(c, title).FontSize(13).FontWeight(600).TextColor(ui.Hex("#ffffff"))
+		ui.Text(c, title).FontSize(13).FontWeight(600).TextColor(f.ink)
 		ui.Text(c, v.detailsErr.Error()).FontSize(11.5).
-			TextColor(ui.RGBA(255, 255, 255, 0.55)).
+			TextColor(f.ink.Alpha(0.55)).
 			MaxWidth(detailsW - 48).TextAlign(ui.Center)
 		ui.PrimaryButton(c, action).OnClick(fn)
 	})
